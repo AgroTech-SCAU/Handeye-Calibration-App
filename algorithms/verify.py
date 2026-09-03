@@ -26,8 +26,13 @@ import cv2
 _here = os.path.dirname(os.path.abspath(__file__))
 if _here not in sys.path:
     sys.path.insert(0, _here)
-from fk_utils import (make_transform, invert_transform,
-                       matrix_to_rpy, rotation_angle_deg, mean_rotation)
+from fk_utils import (
+    make_transform,
+    invert_transform,
+    matrix_to_rpy,
+    rotation_angle_deg,
+    mean_rotation,
+)
 from calib_utils import load_samples, prepare_inputs, load_sample_metadata
 from solve import solve_handeye_core  # 统一求解逻辑
 
@@ -35,8 +40,8 @@ from solve import solve_handeye_core  # 统一求解逻辑
 def load_result(path):
     """加载 samples_result.yaml 中的手眼矩阵.
 
-    新版 solve.py 直接输出 ^gripper T_camera。
-    旧结果没有 stored_transform_convention 字段，按历史格式取逆兼容。
+    新版 solve.py 直接输出 ^gripper T_camera
+    旧结果没有 stored_transform_convention 字段，按历史格式取逆兼容
     """
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
@@ -57,7 +62,9 @@ def main():
     if "--result" in sys.argv:
         idx = sys.argv.index("--result")
         if idx + 1 >= len(sys.argv):
-            print("❌ --result 后面需要跟文件名，例如: python verify.py samples.yaml --result samples_result.yaml")
+            print(
+                "❌ --result 后面需要跟文件名，例如: python verify.py samples.yaml --result samples_result.yaml"
+            )
             sys.exit(1)
         result_path = sys.argv[idx + 1]
 
@@ -69,9 +76,15 @@ def main():
     else:
         print("\n  正在求解手眼矩阵 (RANSAC + LM)...")
         reproj_errors, laplacian_vars, corner_rms = load_sample_metadata(samples_path)
-        result = solve_handeye_core(b2g_list, t2c_list, mode,
-                                    reproj_errors, laplacian_vars, corner_rms,
-                                    verbose=True)
+        result = solve_handeye_core(
+            b2g_list,
+            t2c_list,
+            mode,
+            reproj_errors,
+            laplacian_vars,
+            corner_rms,
+            verbose=True,
+        )
         if result is None:
             print("  ❌ 求解失败")
             return
@@ -89,7 +102,7 @@ def main():
     ref_poses = []
     for b2g, t2c in zip(b2g_list, t2c_list):
         if mode == "eye_in_hand":
-            ref = b2g @ X @ t2c       # T_base_target
+            ref = b2g @ X @ t2c  # T_base_target
         else:
             ref = invert_transform(b2g) @ X @ t2c  # T_gripper_target
         ref_poses.append(ref)
@@ -109,10 +122,9 @@ def main():
     t_thresh = np.median(t_err_all) + 3.0 * max(mad_t, 1e-5)
     r_thresh = np.median(r_err_all) + 3.0 * max(mad_r, 1e-5)
 
-    inlier_mask = np.array([
-        not (t_err_all[i] > t_thresh or r_err_all[i] > r_thresh)
-        for i in range(n)
-    ])
+    inlier_mask = np.array(
+        [not (t_err_all[i] > t_thresh or r_err_all[i] > r_thresh) for i in range(n)]
+    )
     outlier_indices = [i + 1 for i in range(n) if not inlier_mask[i]]
     inlier_indices = [i + 1 for i in range(n) if inlier_mask[i]]
 
@@ -142,7 +154,9 @@ def main():
     print(f"  精度验证报告  |  模式: {mode}  |  样本: {n}")
     print(f"{'='*60}")
     if outlier_indices:
-        print(f"  🧹 异常样本: {outlier_indices} (共 {len(outlier_indices)} 组，不参与参考均值计算)")
+        print(
+            f"  🧹 异常样本: {outlier_indices} (共 {len(outlier_indices)} 组，不参与参考均值计算)"
+        )
         print(f"  ✅ Inlier:  {inlier_indices} (共 {len(inlier_indices)} 组)")
     print(f"  参考位姿 ({ref_label}, inlier 反算均值):")
     print(f"    X={mean_pos[0]:.6f}  Y={mean_pos[1]:.6f}  Z={mean_pos[2]:.6f} m")
@@ -166,9 +180,11 @@ def main():
     print(f"\n  ── 全部样本精度 ({n} 组，含异常值) ──")
     print(f"  平移 RMS:     {t_rms_all:.3f} mm")
     print(f"  平移 Max:     {t_max_all:.3f} mm")
-    print(f"  X 方向 ±{np.std(positions_all, axis=0)[0]*1000:.3f}  "
-          f"Y 方向 ±{np.std(positions_all, axis=0)[1]*1000:.3f}  "
-          f"Z 方向 ±{np.std(positions_all, axis=0)[2]*1000:.3f} mm")
+    print(
+        f"  X 方向 ±{np.std(positions_all, axis=0)[0]*1000:.3f}  "
+        f"Y 方向 ±{np.std(positions_all, axis=0)[1]*1000:.3f}  "
+        f"Z 方向 ±{np.std(positions_all, axis=0)[2]*1000:.3f} mm"
+    )
     print(f"  旋转 RMS:     {r_rms_all:.3f}°")
     print(f"  旋转 Max:     {r_max_all:.3f}°")
 
@@ -181,11 +197,16 @@ def main():
     elif t_rms_in < 15 and r_rms_in < 3:
         print(f"  ⚠️  可接受 — 平移 <15mm 且 旋转 <3°，建议增加样本或重采")
     else:
-        print(f"  ❌ 精度不足 — 可能原因: 内参不准 / 方格尺寸填错 / 运动范围不够 / 角点翻转")
+        print(
+            f"  ❌ 精度不足 — 可能原因: 内参不准 / 方格尺寸填错 / 运动范围不够 / 角点翻转"
+        )
 
     # 可疑样本 (基于 inlier RMS)
-    bad = [(i, t_errors[i], r_errors[i]) for i in range(n)
-           if t_errors[i] > t_rms_in * 2.5 or r_errors[i] > r_rms_in * 2.5]
+    bad = [
+        (i, t_errors[i], r_errors[i])
+        for i in range(n)
+        if t_errors[i] > t_rms_in * 2.5 or r_errors[i] > r_rms_in * 2.5
+    ]
     if bad:
         print(f"\n  ⚠️  可疑样本 (误差 > 2.5×inlier_RMS):")
         for i, te, re in bad:

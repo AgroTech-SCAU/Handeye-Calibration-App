@@ -7,8 +7,6 @@ import traceback
 from pathlib import Path
 from typing import Callable
 
-import numpy as np
-
 
 class _EventStream:
     def __init__(self, emit: Callable[[str], None]):
@@ -23,26 +21,13 @@ class _EventStream:
         return None
 
 
-def joints_to_pose(joints_rad) -> tuple[float, float, float, float, float, float, float]:
-    """Convert configured robot joint angles (rad) to x y z qx qy qz qw."""
-    algorithm_dir = Path(__file__).resolve().parent / "algorithms"
-    algorithm_text = str(algorithm_dir)
-    if algorithm_text not in sys.path:
-        sys.path.insert(0, algorithm_text)
-    fk_utils = importlib.import_module("fk_utils")
-    transform = fk_utils.fk_gripper_in_base(joints_rad)
-    quaternion = fk_utils.matrix_to_quaternion(np.asarray(transform)[:3, :3])
-    translation = np.asarray(transform)[:3, 3]
-    return tuple(float(v) for v in (*translation, *quaternion))
-
-
 def run_algorithm(
     name: str,
     samples_path: Path,
     solve_mode: str,
     emit: Callable[[str], None],
 ) -> int:
-    """Run the bundled algorithms in-process and stream text to the GUI."""
+    """Run the bundled, already-validated calibration algorithms in-process."""
     algorithm_dir = Path(__file__).resolve().parent / "algorithms"
     if not (algorithm_dir / "solve.py").exists():
         emit(f"内置算法目录不存在：{algorithm_dir}\n")
