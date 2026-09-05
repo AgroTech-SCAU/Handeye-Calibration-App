@@ -1,0 +1,90 @@
+{
+  "name": "handeye-calibration-app",
+  "version": "1.0.0",
+  "description": "Electron GUI for the AgroTech-SCAU hand-eye calibration core",
+  "main": "desktop/main.js",
+  "author": "AgroTech-SCAU",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "start:mock": "HANDEYE_MOCK=1 electron .",
+    "verify:core": "python3 scripts/verify_core.py",
+    "verify:static": "node scripts/verify_static.js",
+    "test": "python3 -m unittest discover -s tests -v && npm run smoke:lifecycle && npm run verify:static && npm run verify:core",
+    "dist:linux": "npm run test && electron-builder --linux AppImage deb --x64",
+    "smoke:renderer": "node scripts/smoke_renderer.mjs",
+    "smoke:lifecycle": "node scripts/smoke_backend_lifecycle.cjs"
+  },
+  "devDependencies": {
+    "electron": "41.10.5",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "edu.scau.agrotech.handeye",
+    "productName": "HandEye Calibration",
+    "asar": true,
+    "directories": {
+      "output": "dist",
+      "buildResources": "resources"
+    },
+    "files": [
+      "desktop/**/*",
+      "src/renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "algorithm_runner.py",
+        "to": "handeye/algorithm_runner.py"
+      },
+      {
+        "from": "calibration_engine.py",
+        "to": "handeye/calibration_engine.py"
+      },
+      {
+        "from": "config.py",
+        "to": "handeye/config.py"
+      },
+      {
+        "from": "ros_interface.py",
+        "to": "handeye/ros_interface.py"
+      },
+      {
+        "from": "requirements.txt",
+        "to": "handeye/requirements.txt"
+      },
+      {
+        "from": "algorithms",
+        "to": "handeye/algorithms"
+      },
+      {
+        "from": "backend",
+        "to": "handeye/backend"
+      },
+      {
+        "from": "scripts/install-runtime.sh",
+        "to": "handeye/scripts/install-runtime.sh"
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility",
+      "icon": "resources/icon.png",
+      "artifactName": "HandEye-Calibration-${version}-linux-${arch}.${ext}"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnss3",
+        "libxss1",
+        "libasound2 | libasound2t64",
+        "libgbm1",
+        "libfuse2 | libfuse2t64"
+      ]
+    }
+  }
+}
