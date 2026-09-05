@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-rm -rf "$APP_DIR/.venv"
-find "$APP_DIR" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
-
-echo "已删除当前仓库的 .venv 与 Python 缓存"
-echo "源码、配置和 output 数据未删除"
+cd "$APP_DIR"
+rm -rf .venv node_modules .runtime dist renderer-smoke.png
+echo "[HandEye] source runtime removed from repository only."
+echo "Per-user Release runtime, if present, is intentionally kept at ~/.local/share/handeye-calibration/.venv"

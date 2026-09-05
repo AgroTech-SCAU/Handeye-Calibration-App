@@ -1,8 +1,7 @@
-customtkinter>=5.2.2
 numpy>=1.24
+# OpenCV 5 的部分发行包不再暴露 calibrateHandEye；求解器使用 4.x API
 opencv-python-headless>=4.8,<5
-Pillow>=10.0
 PyYAML>=6.0
 scipy>=1.10
 
-# ROS2 packages (rclpy, geometry_msgs, sensor_msgs) are provided by the host ROS2 installation.
+# ROS2 的 rclpy、geometry_msgs、sensor_msgs、std_msgs 使用系统 ROS2 安装，不能通过 pip 安装

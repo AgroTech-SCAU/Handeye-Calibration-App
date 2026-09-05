@@ -88,6 +88,35 @@ def load_intrinsics(path: Path):
     return camera_matrix, distortion, data
 
 
+class CameraSession:
+    def __init__(self):
+        self.capture: cv2.VideoCapture | None = None
+
+    def open(self, index: int, width: int, height: int) -> None:
+        self.close()
+        backend = cv2.CAP_DSHOW if hasattr(cv2, "CAP_DSHOW") else cv2.CAP_ANY
+        capture = cv2.VideoCapture(index, backend)
+        if not capture.isOpened() and backend != cv2.CAP_ANY:
+            capture.release()
+            capture = cv2.VideoCapture(index)
+        if not capture.isOpened():
+            raise RuntimeError(f"无法打开相机 {index}")
+        capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self.capture = capture
+
+    def read(self) -> np.ndarray | None:
+        if self.capture is None:
+            return None
+        ok, frame = self.capture.read()
+        return frame if ok else None
+
+    def close(self) -> None:
+        if self.capture is not None:
+            self.capture.release()
+            self.capture = None
+
+
 @dataclass
 class IntrinsicCaptureResult:
     sharpness: float

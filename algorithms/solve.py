@@ -16,7 +16,6 @@ import yaml
 _SCIPY_OK = False
 try:
     from scipy.optimize import least_squares
-
     _SCIPY_OK = True
 except ImportError:
     pass
@@ -24,27 +23,19 @@ except ImportError:
 _here = os.path.dirname(os.path.abspath(__file__))
 if _here not in sys.path:
     sys.path.insert(0, _here)
-from fk_utils import (
-    matrix_to_rpy,
-    matrix_to_quaternion,
-    make_transform,
-    invert_transform,
-    rotation_angle_deg,
-    mean_rotation,
-)
-from calib_utils import (
-    load_samples,
-    prepare_inputs,
-    load_sample_metadata,
-    load_sample_validity,
-)
+from fk_utils import (matrix_to_rpy, matrix_to_quaternion,
+                       make_transform, invert_transform,
+                       rotation_angle_deg, mean_rotation)
+from calib_utils import (load_samples, prepare_inputs, load_sample_metadata,
+                         load_sample_validity)
+
 
 MAX_SOLVABLE_TRANS_RMS_MM = 50.0
 MAX_SOLVABLE_ROT_RMS_DEG = 10.0
 
 
 def _load_intrinsics_binding(samples_path):
-    """提取采集时冻结的内参，随手眼结果一起部署"""
+    """提取采集时冻结的内参，随手眼结果一起部署。"""
     with open(samples_path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     camera = data.get("camera_matrix_at_collection")
@@ -68,32 +59,29 @@ def _intrinsics_binding_matches_file(binding, intrinsics_path):
         data = yaml.safe_load(f)
     try:
         file_k = np.asarray(data["camera_matrix"]["data"], dtype=np.float64)
-        file_d = np.asarray(data["distortion_coefficients"]["data"], dtype=np.float64)
+        file_d = np.asarray(
+            data["distortion_coefficients"]["data"], dtype=np.float64)
         bound_k = np.asarray(binding["camera_matrix_data"], dtype=np.float64)
         bound_d = np.asarray(binding["distortion_data"], dtype=np.float64)
         return bool(
             (int(data.get("image_width", 0)), int(data.get("image_height", 0)))
             == (binding["image_width"], binding["image_height"])
-            and file_k.shape == bound_k.shape
-            and file_d.shape == bound_d.shape
+            and file_k.shape == bound_k.shape and file_d.shape == bound_d.shape
             and np.allclose(file_k, bound_k, rtol=0.0, atol=1e-9)
-            and np.allclose(file_d, bound_d, rtol=0.0, atol=1e-9)
-        )
+            and np.allclose(file_d, bound_d, rtol=0.0, atol=1e-9))
     except (KeyError, TypeError, ValueError):
         return False
 
-
 # ── 一致性评估 ──
-
 
 def evaluate(X, b2g_list, t2c_list, mode):
     """计算手眼矩阵 X 在各样本上的一致性误差"""
     constants = []
     for b2g, t2c in zip(b2g_list, t2c_list):
         if mode == "eye_in_hand":
-            c = b2g @ X @ t2c  # base_to_target
+            c = b2g @ X @ t2c       # base_to_target
         else:
-            c = invert_transform(b2g) @ X @ t2c  # gripper_to_camera_to_target → 常量
+            c = invert_transform(b2g) @ X @ t2c   # gripper_to_camera_to_target → 常量
         constants.append(c)
 
     trans = np.array([c[:3, 3] for c in constants])
@@ -110,13 +98,10 @@ def evaluate(X, b2g_list, t2c_list, mode):
         "rot_max_deg": float(np.max(r_err)),
     }
 
-
 # ── 加权 ──
 
-
-def compute_weights(
-    reproj_errors, laplacian_vars=None, corner_rms=None, floor_px=0.03, ref_px=0.8
-):
+def compute_weights(reproj_errors, laplacian_vars=None, corner_rms=None,
+                    floor_px=0.03, ref_px=0.8):
     """基于多维质量指标计算样本权重.
 
     综合以下因素:
@@ -141,9 +126,8 @@ def compute_weights(
     n = len(reproj_errors)
     med_reproj = np.median(valid)
 
-    errors = np.array(
-        [e if e is not None else med_reproj for e in reproj_errors], dtype=np.float64
-    )
+    errors = np.array([e if e is not None else med_reproj for e in reproj_errors],
+                      dtype=np.float64)
     errors = np.maximum(errors, floor_px)
     # Quadratic falloff for reprojection
     w_reproj = np.where(errors <= ref_px, 1.0, (ref_px / errors) ** 2)
@@ -151,17 +135,15 @@ def compute_weights(
     # Laplacian 清晰度因子: < 80 严重降权, 80-120 部分降权, >120 满权
     w_lap = np.ones(n)
     if laplacian_vars is not None and any(v is not None for v in laplacian_vars):
-        laps = np.array(
-            [v if v is not None else 120.0 for v in laplacian_vars], dtype=np.float64
-        )
+        laps = np.array([v if v is not None else 120.0 for v in laplacian_vars],
+                        dtype=np.float64)
         w_lap = np.clip(laps / 120.0, 0.1, 1.0)  # 120 = good baseline
 
     # 角点 RMS 因子: > 0.2 严重降权, < 0.1 满权
     w_crms = np.ones(n)
     if corner_rms is not None and any(v is not None for v in corner_rms):
-        crms = np.array(
-            [v if v is not None else 0.1 for v in corner_rms], dtype=np.float64
-        )
+        crms = np.array([v if v is not None else 0.1 for v in corner_rms],
+                        dtype=np.float64)
         w_crms = np.clip(0.2 / np.maximum(crms, 0.02), 0.1, 1.0)
 
     # 综合权重: 重投影占主导, 清晰度和角点质量作为惩罚因子
@@ -172,12 +154,11 @@ def compute_weights(
 
 # ── LM 非线性优化 ──
 
-
 def handeye_residual(params, A_rel_list, B_rel_list, weights):
     """相对运动残差: 最小化 Σ w_ij * ||A_ij X - X B_ij||.
 
     将旋转和平移残差分别压缩为 3 维向量 (axis-angle + 欧氏距离),
-    总计 6 维/样本, 避免 9 维旋转残差主导优化方向
+    总计 6 维/样本, 避免 9 维旋转残差主导优化方向。
 
     Args:
         params: (6,) ndarray [rx, ry, rz, tx, ty, tz]
@@ -190,7 +171,7 @@ def handeye_residual(params, A_rel_list, B_rel_list, weights):
     t = params[3:].reshape(3, 1)
 
     residuals = []
-    # 1° 旋转误差和 5mm 平移误差具有相同量级，避免某一部分支配优化
+    # 1° 旋转误差和 5mm 平移误差具有相同量级，避免某一部分支配优化。
     rot_scale = np.deg2rad(1.0)
     trans_scale = 0.005
 
@@ -220,10 +201,10 @@ def lm_refine(X_init, A_list, B_list, b2g_list, t2c_list, mode, weights=None):
     """用鲁棒非线性最小二乘精化手眼矩阵 X.
 
     先由绝对位姿构造全部相对运动，再优化
-    min Σ w_ij * ||A_ij X - X B_ij||²
+    min Σ w_ij * ||A_ij X - X B_ij||²。
 
-    从 OpenCV 代数解出发, 迭代优化到局部最优
-    内置几何一致性验证: 如果 LM 降低了 hand-eye 一致性, 自动回退
+    从 OpenCV 代数解出发, 迭代优化到局部最优。
+    内置几何一致性验证: 如果 LM 降低了 hand-eye 一致性, 自动回退。
 
     Args:
         X_init: 4x4 初始手眼矩阵 (来自最佳 OpenCV 方法)
@@ -238,8 +219,8 @@ def lm_refine(X_init, A_list, B_list, b2g_list, t2c_list, mode, weights=None):
         return X_init
 
     A_rel, B_rel, pair_weights = _compute_all_pair_motions(
-        A_list, B_list, min_rot_deg=0.1, sample_weights=weights, mode=mode
-    )
+        A_list, B_list, min_rot_deg=0.1,
+        sample_weights=weights, mode=mode)
     if len(A_rel) < 3:
         return X_init
 
@@ -251,13 +232,12 @@ def lm_refine(X_init, A_list, B_list, b2g_list, t2c_list, mode, weights=None):
     params_init = np.concatenate([rvec_init.ravel(), X_init[:3, 3]])
 
     result = least_squares(
-        handeye_residual,
-        params_init,
+        handeye_residual, params_init,
         args=(A_rel, B_rel, pair_weights),
-        method="trf",
-        loss="soft_l1",
+        method='trf',
+        loss='soft_l1',
         f_scale=1.0,
-        x_scale="jac",
+        x_scale='jac',
         ftol=1e-12,
         xtol=1e-12,
         gtol=1e-12,
@@ -279,11 +259,9 @@ def lm_refine(X_init, A_list, B_list, b2g_list, t2c_list, mode, weights=None):
     m_opt = evaluate(X_opt, b2g_list, t2c_list, mode)
     score_opt = m_opt["trans_rms_mm"] / 5.0 + m_opt["rot_rms_deg"] / 1.0
     if score_opt > score0 * 1.05:
-        print(
-            f"  ⚠ LM 导致几何一致性退化 "
-            f"({m0['trans_rms_mm']:.1f}mm/{m0['rot_rms_deg']:.2f}° → "
-            f"{m_opt['trans_rms_mm']:.1f}mm/{m_opt['rot_rms_deg']:.2f}°)，回退到初值"
-        )
+        print(f"  ⚠ LM 导致几何一致性退化 "
+              f"({m0['trans_rms_mm']:.1f}mm/{m0['rot_rms_deg']:.2f}° → "
+              f"{m_opt['trans_rms_mm']:.1f}mm/{m_opt['rot_rms_deg']:.2f}°)，回退到初值")
         return X_init
 
     return X_opt
@@ -291,70 +269,65 @@ def lm_refine(X_init, A_list, B_list, b2g_list, t2c_list, mode, weights=None):
 
 # ── RANSAC 手眼标定 ──
 
-
 def _constant_poses(X, A_list, B_list, mode="eye_in_hand"):
-    """由每组绝对位姿反算理论固定不动的参考位姿"""
+    """由每组绝对位姿反算理论固定不动的参考位姿。"""
     if mode == "eye_in_hand":
         return [A @ X @ B for A, B in zip(A_list, B_list)]
     return [invert_transform(A) @ X @ B for A, B in zip(A_list, B_list)]
 
 
 def _compute_constant_errors(X, A_list, B_list, mode="eye_in_hand"):
-    """相对鲁棒中心计算每个样本的平移/旋转一致性误差"""
+    """相对鲁棒中心计算每个样本的平移/旋转一致性误差。"""
     constants = _constant_poses(X, A_list, B_list, mode)
     trans = np.array([c[:3, 3] for c in constants])
     median_t = np.median(trans, axis=0)
     t_err = np.linalg.norm(trans - median_t, axis=1) * 1000.0
 
-    # 旋转采用 medoid，避免少量大角度异常值把均值拉偏
+    # 旋转采用 medoid，避免少量大角度异常值把均值拉偏。
     rotations = [c[:3, :3] for c in constants]
-    dist = np.array(
-        [[rotation_angle_deg(Ri.T @ Rj) for Rj in rotations] for Ri in rotations]
-    )
+    dist = np.array([
+        [rotation_angle_deg(Ri.T @ Rj) for Rj in rotations]
+        for Ri in rotations
+    ])
     center_idx = int(np.argmin(np.median(dist, axis=1)))
     center_R = rotations[center_idx]
     r_err = np.array([rotation_angle_deg(center_R.T @ R) for R in rotations])
     return t_err, r_err
 
 
-def _best_constant_consensus(
-    X, A_list, B_list, mode, t_thresh_mm, r_thresh_deg, weights=None
-):
-    """寻找最大的固定参考位姿簇，避免全局均值被多数异常值污染"""
+def _best_constant_consensus(X, A_list, B_list, mode,
+                             t_thresh_mm, r_thresh_deg, weights=None):
+    """寻找最大的固定参考位姿簇，避免全局均值被多数异常值污染。"""
     constants = _constant_poses(X, A_list, B_list, mode)
     n = len(constants)
     w = np.asarray(weights if weights is not None else np.ones(n), dtype=np.float64)
     best = ([], -1.0, float("inf"), None, None)
 
     for center in constants:
-        t_err = np.array(
-            [np.linalg.norm(c[:3, 3] - center[:3, 3]) * 1000.0 for c in constants]
-        )
-        r_err = np.array(
-            [rotation_angle_deg(center[:3, :3].T @ c[:3, :3]) for c in constants]
-        )
+        t_err = np.array([
+            np.linalg.norm(c[:3, 3] - center[:3, 3]) * 1000.0
+            for c in constants
+        ])
+        r_err = np.array([
+            rotation_angle_deg(center[:3, :3].T @ c[:3, :3])
+            for c in constants
+        ])
         inliers = np.flatnonzero(
-            (t_err <= t_thresh_mm) & (r_err <= r_thresh_deg)
-        ).tolist()
+            (t_err <= t_thresh_mm) & (r_err <= r_thresh_deg)).tolist()
         score = float(np.sum(w[inliers]))
-        quality = (
-            float(
-                np.median(t_err[inliers]) / t_thresh_mm
-                + np.median(r_err[inliers]) / r_thresh_deg
-            )
-            if inliers
-            else float("inf")
-        )
+        quality = (float(np.median(t_err[inliers]) / t_thresh_mm
+                         + np.median(r_err[inliers]) / r_thresh_deg)
+                   if inliers else float("inf"))
         if score > best[1] or (abs(score - best[1]) < 1e-12 and quality < best[2]):
             best = (inliers, score, quality, t_err, r_err)
     return best
 
 
 def _solve_ax_xb_linear(A_rel_list, B_rel_list, weights=None):
-    """用全部相对运动直接解 A_ij X = X B_ij
+    """用全部相对运动直接解 A_ij X = X B_ij。
 
-    旋转使用 Kronecker/SVD，平移使用加权最小二乘；与
-    calibrateHandEye 不同，本函数的输入就是相对运动，不会再二次做差
+    旋转使用 Kronecker/SVD，平移使用加权最小二乘。与
+    calibrateHandEye 不同，本函数的输入就是相对运动，不会再二次做差。
     """
     n = len(A_rel_list)
     if n < 2:
@@ -366,7 +339,8 @@ def _solve_ax_xb_linear(A_rel_list, B_rel_list, weights=None):
     for A, B, wi in zip(A_rel_list, B_rel_list, w):
         Ra = np.asarray(A[:3, :3], dtype=np.float64)
         Rb = np.asarray(B[:3, :3], dtype=np.float64)
-        blocks.append(np.sqrt(wi) * (np.kron(np.eye(3), Ra) - np.kron(Rb.T, np.eye(3))))
+        blocks.append(np.sqrt(wi) * (
+            np.kron(np.eye(3), Ra) - np.kron(Rb.T, np.eye(3))))
     M = np.vstack(blocks)
     try:
         _, singular_values, vt = np.linalg.svd(M)
@@ -389,7 +363,8 @@ def _solve_ax_xb_linear(A_rel_list, B_rel_list, weights=None):
             sw = np.sqrt(wi)
             lhs.append(sw * (Ra - np.eye(3)))
             rhs.append(sw * (R @ tb - ta))
-            rot_cost += wi * rotation_angle_deg((Ra @ R).T @ (R @ Rb)) ** 2
+            rot_cost += wi * rotation_angle_deg(
+                (Ra @ R).T @ (R @ Rb)) ** 2
         L = np.vstack(lhs)
         y = np.hstack(rhs)
         try:
@@ -416,11 +391,10 @@ def _relative_pair_residuals(X, A_rel_list, B_rel_list):
 
 
 def _robust_all_pairs_solve(A_rel_list, B_rel_list, pair_weights=None):
-    """全相对运动 IRLS；小角度运动也能累积使用，而非只看相邻样本"""
+    """全相对运动 IRLS；小角度运动也能累积使用，而非只看相邻样本。"""
     base_w = np.asarray(
         pair_weights if pair_weights is not None else np.ones(len(A_rel_list)),
-        dtype=np.float64,
-    )
+        dtype=np.float64)
     work_w = np.clip(base_w, 1e-6, None)
     X = None
     for _ in range(6):
@@ -430,10 +404,9 @@ def _robust_all_pairs_solve(A_rel_list, B_rel_list, pair_weights=None):
         t_err, r_err = _relative_pair_residuals(X, A_rel_list, B_rel_list)
         t_scale = max(2.0, 1.4826 * np.median(np.abs(t_err - np.median(t_err))))
         r_scale = max(0.3, 1.4826 * np.median(np.abs(r_err - np.median(r_err))))
-        normalized = np.sqrt(
-            (t_err / (2.5 * t_scale)) ** 2 + (r_err / (2.5 * r_scale)) ** 2
-        )
-        robust_w = 1.0 / (1.0 + normalized**2)
+        normalized = np.sqrt((t_err / (2.5 * t_scale)) ** 2
+                             + (r_err / (2.5 * r_scale)) ** 2)
+        robust_w = 1.0 / (1.0 + normalized ** 2)
         new_w = np.clip(base_w * robust_w, 1e-6, None)
         if np.max(np.abs(new_w - work_w)) < 1e-4:
             break
@@ -441,19 +414,12 @@ def _robust_all_pairs_solve(A_rel_list, B_rel_list, pair_weights=None):
     return X
 
 
-def ransac_handeye(
-    A_list,
-    B_list,
-    weights=None,
-    mode="eye_in_hand",
-    n_iter=600,
-    inlier_t_mm=5.0,
-    inlier_r_deg=2.0,
-):
+def ransac_handeye(A_list, B_list, weights=None, mode="eye_in_hand",
+                   n_iter=600, inlier_t_mm=5.0, inlier_r_deg=2.0):
     """RANSAC 手眼标定: 随机采样 → 子集求解 → 投票 → 最优模型.
 
     每个随机子集使用全部相对运动直接线性求解，再在绝对位姿层面寻找
-    最大固定参考位姿簇；阈值不随坏数据自动放宽，避免把错误数据包装成成功
+    最大固定参考位姿簇。阈值不随坏数据自动放宽，避免把错误数据包装成成功。
 
     Args:
         A_list, B_list: 成对的绝对机器人位姿与标定板相机位姿
@@ -485,18 +451,16 @@ def ransac_handeye(
         B_sub = [B_list[i] for i in idx]
         w_sub = [w[i] for i in idx]
         A_rel, B_rel, pair_w = _compute_all_pair_motions(
-            A_sub, B_sub, min_rot_deg=0.1, sample_weights=w_sub, mode=mode
-        )
+            A_sub, B_sub, min_rot_deg=0.1,
+            sample_weights=w_sub, mode=mode)
         X = _robust_all_pairs_solve(A_rel, B_rel, pair_w)
         if X is None or not np.all(np.isfinite(X)):
             continue
 
         inliers, score, quality, _, _ = _best_constant_consensus(
-            X, A_list, B_list, mode, inlier_t_mm, inlier_r_deg, w
-        )
-        if score > best_score or (
-            abs(score - best_score) < 1e-12 and quality < best_quality
-        ):
+            X, A_list, B_list, mode, inlier_t_mm, inlier_r_deg, w)
+        if score > best_score or (abs(score - best_score) < 1e-12
+                                  and quality < best_quality):
             best_score = score
             best_quality = quality
             best_X = X
@@ -507,17 +471,10 @@ def ransac_handeye(
         return _fallback_solve(A_list, B_list, weights, mode)
 
     if len(best_inliers) < 4:
-        return (
-            best_X,
-            best_inliers,
-            {
-                "removed": sorted(set(range(n)) - set(best_inliers)),
-                "iterations": n_iter,
-                "inlier_count": len(best_inliers),
-                "score": float(best_score),
-                "quality": float(best_quality),
-            },
-        )
+        return best_X, best_inliers, {
+            "removed": sorted(set(range(n)) - set(best_inliers)),
+            "iterations": n_iter, "inlier_count": len(best_inliers),
+            "score": float(best_score), "quality": float(best_quality)}
 
     removed = sorted(set(range(n)) - set(best_inliers))
     info = {
@@ -531,25 +488,19 @@ def ransac_handeye(
 
 
 def _fallback_solve(A_list, B_list, weights=None, mode="eye_in_hand"):
-    """全量相对运动回退；不再无条件剔除固定比例样本"""
+    """全量相对运动回退；不再无条件剔除固定比例样本。"""
     n = len(A_list)
     A_rel, B_rel, pair_w = _compute_all_pair_motions(
-        A_list, B_list, min_rot_deg=0.1, sample_weights=weights, mode=mode
-    )
+        A_list, B_list, min_rot_deg=0.1, sample_weights=weights,
+        mode=mode)
     X = _robust_all_pairs_solve(A_rel, B_rel, pair_w)
     if X is None:
         return None, [], {"removed": list(range(n)), "iterations": 0}
     inliers, _, quality, _, _ = _best_constant_consensus(
-        X, A_list, B_list, mode, 10.0, 3.0, weights
-    )
+        X, A_list, B_list, mode, 10.0, 3.0, weights)
     removed = sorted(set(range(n)) - set(inliers))
-    info = {
-        "removed": removed,
-        "iterations": 0,
-        "inlier_count": len(inliers),
-        "fallback": True,
-        "quality": float(quality),
-    }
+    info = {"removed": removed, "iterations": 0, "inlier_count": len(inliers),
+            "fallback": True, "quality": float(quality)}
     return X, inliers, info
 
 
@@ -565,7 +516,6 @@ def prepare_inputs_for_lists(A_list, B_list):
 
 
 # ── 小角度运动优化 ──
-
 
 def _rotation_angle_between(R1, R2):
     """两个旋转矩阵之间的旋转角度 (deg)."""
@@ -615,9 +565,8 @@ def _reorder_by_rotation_diversity(A_list, B_list):
     return A_sorted, B_sorted, order
 
 
-def _compute_all_pair_motions(
-    A_list, B_list, min_rot_deg=0.1, sample_weights=None, mode="eye_in_hand"
-):
+def _compute_all_pair_motions(A_list, B_list, min_rot_deg=0.1,
+                              sample_weights=None, mode="eye_in_hand"):
     """计算所有样本对的相对运动, 按旋转量加权.
 
     对于小角度场景, 相邻样本之间相对旋转极小.
@@ -629,9 +578,8 @@ def _compute_all_pair_motions(
         pair_weights: 每对的权重 (与旋转角度成正比)
     """
     n = len(A_list)
-    sw = np.asarray(
-        sample_weights if sample_weights is not None else np.ones(n), dtype=np.float64
-    )
+    sw = np.asarray(sample_weights if sample_weights is not None else np.ones(n),
+                    dtype=np.float64)
     A_pairs, B_pairs, pair_weights = [], [], []
     for i in range(n):
         Bi_inv = invert_transform(B_list[i])
@@ -650,15 +598,14 @@ def _compute_all_pair_motions(
             if max(ang_a, ang_b) >= min_rot_deg:
                 A_pairs.append(A_rel)
                 B_pairs.append(B_rel)
-                # 小角度对仍保留；较大旋转对有更高信息量，但权重封顶
+                # 小角度对仍保留；较大旋转对有更高信息量，但权重封顶。
                 motion_w = np.clip(excitation / 15.0, 0.10, 1.0)
                 pair_weights.append(np.sqrt(sw[i] * sw[j]) * motion_w)
     return A_pairs, B_pairs, np.array(pair_weights, dtype=np.float64)
 
 
-def _solve_with_all_pairs(
-    A_pairs, B_pairs, pair_weights, b2g_list, t2c_list, mode, verbose=False
-):
+def _solve_with_all_pairs(A_pairs, B_pairs, pair_weights, b2g_list, t2c_list, mode,
+                           verbose=False):
     """使用全量相对运动对求解手眼矩阵.
 
     当 calibrateHandEye 因为单对旋转过小而失败时, 用所有对的加权组合求解.
@@ -675,28 +622,19 @@ def _solve_with_all_pairs(
     # 用原始绝对位姿做一致性评估
     ev = evaluate(X, b2g_list, t2c_list, mode)
     if verbose:
-        print(
-            f"  [全量对] {len(A_pairs)} 对相对运动 → "
-            f"平移RMS={ev['trans_rms_mm']:.1f}mm 旋转RMS={ev['rot_rms_deg']:.2f}°"
-        )
+        print(f"  [全量对] {len(A_pairs)} 对相对运动 → "
+              f"平移RMS={ev['trans_rms_mm']:.1f}mm 旋转RMS={ev['rot_rms_deg']:.2f}°")
     return X, ev
 
 
 # ── 核心求解 API ──
 
-
-def _solve_handeye_core_legacy(
-    b2g_list,
-    t2c_list,
-    mode,
-    reproj_errors=None,
-    laplacian_vars=None,
-    corner_rms=None,
-    verbose=False,
-):
+def _solve_handeye_core_legacy(b2g_list, t2c_list, mode,
+                               reproj_errors=None, laplacian_vars=None, corner_rms=None,
+                               verbose=False):
     """手眼标定核心求解: RANSAC + LM 优化.
 
-    供 solve.py 和 verify.py 共用, 保证求解逻辑一致
+    供 solve.py 和 verify.py 共用, 保证求解逻辑一致。
 
     Args:
         b2g_list, t2c_list: 样本列表
@@ -729,10 +667,8 @@ def _solve_handeye_core_legacy(
     small_motion = med_pair_angle < 15.0  # 中位旋转差 < 15° → 小角度场景
     if verbose:
         if small_motion:
-            print(
-                f"  🔍 检测到小角度场景 (中位旋转差={med_pair_angle:.1f}°)，"
-                f"启用旋转重排序 + 全量对回退"
-            )
+            print(f"  🔍 检测到小角度场景 (中位旋转差={med_pair_angle:.1f}°)，"
+                  f"启用旋转重排序 + 全量对回退")
         else:
             print(f"  中位旋转差={med_pair_angle:.1f}°")
 
@@ -756,38 +692,28 @@ def _solve_handeye_core_legacy(
     inlier_t_mm = 12.0 if small_motion else 8.0
     inlier_r_deg = 4.0 if small_motion else 3.0
     X_ransac, inlier_indices, ransac_info = ransac_handeye(
-        A_ordered,
-        B_ordered,
-        weights=weights,
+        A_ordered, B_ordered, weights=weights,
         n_iter=500 if small_motion else 300,
-        inlier_t_mm=inlier_t_mm,
-        inlier_r_deg=inlier_r_deg,
-    )
+        inlier_t_mm=inlier_t_mm, inlier_r_deg=inlier_r_deg)
 
     # ── 全量对回退 ──
     if (X_ransac is None or len(inlier_indices) < 4) and small_motion:
         if verbose:
-            print(
-                f"  🔄 RANSAC 内点不足 ({len(inlier_indices) if inlier_indices else 0})，"
-                f"回退到全量相对运动对求解..."
-            )
+            print(f"  🔄 RANSAC 内点不足 ({len(inlier_indices) if inlier_indices else 0})，"
+                  f"回退到全量相对运动对求解...")
         A_pairs, B_pairs, pair_w = _compute_all_pair_motions(
-            A_list, B_list, min_rot_deg=0.3
-        )
+            A_list, B_list, min_rot_deg=0.3)
         if verbose:
             print(f"  📐 全量对: {len(A_pairs)} 对 (共 {n} 样本, {n*(n-1)//2} 种组合)")
-        result = _solve_with_all_pairs(
-            A_pairs, B_pairs, pair_w, b2g_list, t2c_list, mode, verbose=verbose
-        )
+        result = _solve_with_all_pairs(A_pairs, B_pairs, pair_w,
+                                        b2g_list, t2c_list, mode, verbose=verbose)
         if result is None:
             return None
         X_allpairs, ev_all = result
 
         # 基于一致性剔除最差的 20%
         t_err, r_err = _compute_constant_errors(X_allpairs, A_list, B_list)
-        combined = t_err / max(np.median(t_err), 1e-5) + r_err / max(
-            np.median(r_err), 1e-5
-        )
+        combined = t_err / max(np.median(t_err), 1e-5) + r_err / max(np.median(r_err), 1e-5)
         threshold = np.percentile(combined, 80)
         inlier_indices = [i for i in range(n) if combined[i] <= threshold]
         removed = sorted(set(range(n)) - set(inlier_indices))
@@ -821,9 +747,8 @@ def _solve_handeye_core_legacy(
                 t_gb_in = [A_in[i][:3, 3:4] for i in range(len(A_in))]
                 R_tc_in = [B_in[i][:3, :3] for i in range(len(B_in))]
                 t_tc_in = [B_in[i][:3, 3:4] for i in range(len(B_in))]
-                R_x, t_x = cv2.calibrateHandEye(
-                    R_gb_in, t_gb_in, R_tc_in, t_tc_in, method=method_id
-                )
+                R_x, t_x = cv2.calibrateHandEye(R_gb_in, t_gb_in, R_tc_in, t_tc_in,
+                                                 method=method_id)
                 X_m = make_transform(R_x, t_x.reshape(3))
                 ev = evaluate(X_m, b2g_in, t2c_in, mode)
                 score = ev["trans_rms_mm"] / 5.0 + ev["rot_rms_deg"] / 1.0
@@ -859,10 +784,8 @@ def _solve_handeye_core_legacy(
     t2c_in = [t2c_list[i] for i in inlier_indices]
 
     methods = {
-        "TSAI": cv2.CALIB_HAND_EYE_TSAI,
-        "PARK": cv2.CALIB_HAND_EYE_PARK,
-        "HORAUD": cv2.CALIB_HAND_EYE_HORAUD,
-        "ANDREFF": cv2.CALIB_HAND_EYE_ANDREFF,
+        "TSAI": cv2.CALIB_HAND_EYE_TSAI, "PARK": cv2.CALIB_HAND_EYE_PARK,
+        "HORAUD": cv2.CALIB_HAND_EYE_HORAUD, "ANDREFF": cv2.CALIB_HAND_EYE_ANDREFF,
         "DANIILIDIS": cv2.CALIB_HAND_EYE_DANIILIDIS,
     }
 
@@ -874,9 +797,8 @@ def _solve_handeye_core_legacy(
             t_gb_in = [A_in[i][:3, 3:4] for i in range(len(A_in))]
             R_tc_in = [B_in[i][:3, :3] for i in range(len(B_in))]
             t_tc_in = [B_in[i][:3, 3:4] for i in range(len(B_in))]
-            R_x, t_x = cv2.calibrateHandEye(
-                R_gb_in, t_gb_in, R_tc_in, t_tc_in, method=method_id
-            )
+            R_x, t_x = cv2.calibrateHandEye(R_gb_in, t_gb_in, R_tc_in, t_tc_in,
+                                             method=method_id)
             X_m = make_transform(R_x, t_x.reshape(3))
             ev = evaluate(X_m, b2g_in, t2c_in, mode)
             score = ev["trans_rms_mm"] / 5.0 + ev["rot_rms_deg"] / 1.0
@@ -901,9 +823,8 @@ def _solve_handeye_core_legacy(
 
 # ── 有限运动鲁棒核心 ──
 
-
 def _motion_observability(A_list, mode="eye_in_hand"):
-    """评估旋转激励；手眼标定至少需要两个不平行的旋转方向"""
+    """评估旋转激励；手眼标定至少需要两个不平行的旋转方向。"""
     rvecs, angles = [], []
     for i in range(len(A_list)):
         for j in range(i + 1, len(A_list)):
@@ -917,12 +838,8 @@ def _motion_observability(A_list, mode="eye_in_hand"):
                 rvecs.append(rv)
                 angles.append(angle)
     if not angles:
-        return {
-            "median_angle_deg": 0.0,
-            "max_angle_deg": 0.0,
-            "axis_ratio": 0.0,
-            "pair_count": 0,
-        }
+        return {"median_angle_deg": 0.0, "max_angle_deg": 0.0,
+                "axis_ratio": 0.0, "pair_count": 0}
     s = np.linalg.svd(np.asarray(rvecs), compute_uv=False)
     axis_ratio = float(s[1] / s[0]) if len(s) >= 2 and s[0] > 1e-12 else 0.0
     return {
@@ -933,16 +850,10 @@ def _motion_observability(A_list, mode="eye_in_hand"):
     }
 
 
-def solve_handeye_core(
-    b2g_list,
-    t2c_list,
-    mode,
-    reproj_errors=None,
-    laplacian_vars=None,
-    corner_rms=None,
-    verbose=False,
-):
-    """有限运动友好的全相对运动 + 样本级 RANSAC 求解"""
+def solve_handeye_core(b2g_list, t2c_list, mode,
+                       reproj_errors=None, laplacian_vars=None, corner_rms=None,
+                       verbose=False):
+    """有限运动友好的全相对运动 + 样本级 RANSAC 求解。"""
     n = len(b2g_list)
     if n < 6 or mode not in ("eye_in_hand", "eye_to_hand"):
         return None
@@ -960,11 +871,9 @@ def solve_handeye_core(
     small_motion = obs["median_angle_deg"] < 15.0
 
     if verbose:
-        print(
-            f"  运动激励: median={obs['median_angle_deg']:.2f}°  "
-            f"max={obs['max_angle_deg']:.2f}°  "
-            f"双轴比={obs['axis_ratio']:.3f}"
-        )
+        print(f"  运动激励: median={obs['median_angle_deg']:.2f}°  "
+              f"max={obs['max_angle_deg']:.2f}°  "
+              f"双轴比={obs['axis_ratio']:.3f}")
         if small_motion:
             print("  🔍 有限运动模式：累计使用全部样本对，并按信息量加权")
 
@@ -979,14 +888,9 @@ def solve_handeye_core(
     r_thresh = 8.0 if small_motion else 6.0
     min_inliers = max(5, int(np.ceil(n * 0.30)))
     X, inlier_indices, _ = ransac_handeye(
-        A_list,
-        B_list,
-        weights=weights,
-        mode=mode,
+        A_list, B_list, weights=weights, mode=mode,
         n_iter=900 if small_motion else 600,
-        inlier_t_mm=t_thresh,
-        inlier_r_deg=r_thresh,
-    )
+        inlier_t_mm=t_thresh, inlier_r_deg=r_thresh)
 
     if X is None or len(inlier_indices) < min_inliers:
         if verbose:
@@ -995,20 +899,19 @@ def solve_handeye_core(
             print("     不再用少量样本强行输出变化矩阵")
         return None
 
-    # 交替执行“内点全相对运动求解 → 全样本重新投票”
+    # 交替执行“内点全相对运动求解 → 全样本重新投票”。
     for _ in range(4):
         A_in = [A_list[i] for i in inlier_indices]
         B_in = [B_list[i] for i in inlier_indices]
         w_in = [weights[i] for i in inlier_indices]
         A_rel, B_rel, pair_w = _compute_all_pair_motions(
-            A_in, B_in, min_rot_deg=0.1, sample_weights=w_in, mode=mode
-        )
+            A_in, B_in, min_rot_deg=0.1,
+            sample_weights=w_in, mode=mode)
         X_new = _robust_all_pairs_solve(A_rel, B_rel, pair_w)
         if X_new is None:
             return None
         new_inliers, _, _, _, _ = _best_constant_consensus(
-            X_new, A_list, B_list, mode, t_thresh, r_thresh, weights
-        )
+            X_new, A_list, B_list, mode, t_thresh, r_thresh, weights)
         X = X_new
         if new_inliers == inlier_indices:
             break
@@ -1033,16 +936,13 @@ def solve_handeye_core(
         if verbose:
             print(f"  ❌ 相机距末端 {np.linalg.norm(X[:3, 3]):.3f}m，疑似退化解")
         return None
-    if (
-        metrics["trans_rms_mm"] > MAX_SOLVABLE_TRANS_RMS_MM
-        or metrics["rot_rms_deg"] > MAX_SOLVABLE_ROT_RMS_DEG
-    ):
+    if (metrics["trans_rms_mm"] > MAX_SOLVABLE_TRANS_RMS_MM
+            or metrics["rot_rms_deg"] > MAX_SOLVABLE_ROT_RMS_DEG):
         if verbose:
             print(
                 "  ❌ 内点残差严重超限，拒绝继续优化: "
                 f"{metrics['trans_rms_mm']:.2f}mm / "
-                f"{metrics['rot_rms_deg']:.2f}°"
-            )
+                f"{metrics['rot_rms_deg']:.2f}°")
         return None
 
     removed = sorted(set(range(n)) - set(inlier_indices))
@@ -1051,23 +951,22 @@ def solve_handeye_core(
 
 # ── 简易求解：模仿 easy_handeye ──
 
-
-def _solve_simple(
-    samples_path, b2g_list, t2c_list, mode, n, total_samples=None, pre_rejected=None
-):
-    """直接调用 OpenCV calibrateHandEye，不剔除任何样本
+def _solve_simple(samples_path, b2g_list, t2c_list, mode, n,
+                  total_samples=None, pre_rejected=None):
+    """直接调用 OpenCV calibrateHandEye，不剔除任何样本。
 
     复现 easy_handeye 的核心逻辑：所有样本参与，Tsai-Lenz/Park 等方法
-    分别求解，选一致性最好的输出；无 RANSAC、无 LM 精化
+    分别求解，选一致性最好的输出。无 RANSAC、无 LM 精化。
     """
-    R_gb, t_gb, R_tc, t_tc = prepare_inputs(b2g_list, t2c_list, mode)
+    R_gb, t_gb, R_tc, t_tc = prepare_inputs(
+        b2g_list, t2c_list, mode)
 
     methods = {
-        "TSAI": cv2.CALIB_HAND_EYE_TSAI,
-        "PARK": cv2.CALIB_HAND_EYE_PARK,
-        "HORAUD": cv2.CALIB_HAND_EYE_HORAUD,
-        "ANDREFF": cv2.CALIB_HAND_EYE_ANDREFF,
-        "DANIILIDIS": cv2.CALIB_HAND_EYE_DANIILIDIS,
+        "TSAI":        cv2.CALIB_HAND_EYE_TSAI,
+        "PARK":        cv2.CALIB_HAND_EYE_PARK,
+        "HORAUD":      cv2.CALIB_HAND_EYE_HORAUD,
+        "ANDREFF":     cv2.CALIB_HAND_EYE_ANDREFF,
+        "DANIILIDIS":  cv2.CALIB_HAND_EYE_DANIILIDIS,
     }
 
     best_X = None
@@ -1080,7 +979,8 @@ def _solve_simple(
 
     for name, method_id in methods.items():
         try:
-            R_x, t_x = cv2.calibrateHandEye(R_gb, t_gb, R_tc, t_tc, method=method_id)
+            R_x, t_x = cv2.calibrateHandEye(
+                R_gb, t_gb, R_tc, t_tc, method=method_id)
             X = make_transform(R_x, t_x.reshape(3))
 
             # 用全部样本评估一致性
@@ -1090,12 +990,8 @@ def _solve_simple(
             score = trans_rms / 5.0 + rot_rms / 1.0
 
             results[name] = {
-                "X": X,
-                "trans_rms": trans_rms,
-                "rot_rms": rot_rms,
-                "t_err": t_err,
-                "r_err": r_err,
-            }
+                "X": X, "trans_rms": trans_rms, "rot_rms": rot_rms,
+                "t_err": t_err, "r_err": r_err}
 
             print(f"  {name:<16} {trans_rms:8.2f} mm {rot_rms:8.2f}°")
 
@@ -1122,11 +1018,7 @@ def _solve_simple(
 
     parent = "tool0" if mode == "eye_in_hand" else "arm_base_link"
     child = "camera_optical_frame"
-    label = (
-        "相机在末端坐标系中的位置"
-        if mode == "eye_in_hand"
-        else "相机在基座坐标系中的位置"
-    )
+    label = "相机在末端坐标系中的位置" if mode == "eye_in_hand" else "相机在基座坐标系中的位置"
 
     print(f"\n{'='*55}")
     print(f"  标定结果 (极简模式: {best_method}, 全部 {n} 样本)")
@@ -1145,7 +1037,6 @@ def _solve_simple(
 
     # 保存
     import os as _os
-
     result_path = _os.path.splitext(samples_path)[0] + "_result.yaml"
     total_samples = int(total_samples if total_samples is not None else n)
     pre_rejected = list(pre_rejected or [])
@@ -1155,7 +1046,7 @@ def _solve_simple(
         "parent_frame": parent,
         "child_frame": child,
         "transform_matrix": X_display.tolist(),
-        "translation_m": t.tolist() if hasattr(t, "tolist") else list(t),
+        "translation_m": t.tolist() if hasattr(t, 'tolist') else list(t),
         "quaternion_xyzw": list(q),
         "rpy_rad": [float(r), float(p), float(y)],
         "translation_rms_mm": best_result["trans_rms"],
@@ -1166,28 +1057,26 @@ def _solve_simple(
         "total_samples": total_samples,
         "inlier_ratio": n / total_samples,
         "stored_transform_convention": (
-            "camera_to_gripper (^gripper T_camera)"
-            if mode == "eye_in_hand"
-            else "camera_to_base (^base T_camera)"
-        ),
+            "camera_to_gripper (^gripper T_camera)" if mode == "eye_in_hand"
+            else "camera_to_base (^base T_camera)"),
         "removed_samples": [i + 1 for i in pre_rejected],
     }
     intrinsics_binding = _load_intrinsics_binding(samples_path)
     if intrinsics_binding is not None:
         payload["intrinsics_binding"] = intrinsics_binding
-    with open(result_path, "w", encoding="utf-8") as f:
+    with open(result_path, 'w', encoding="utf-8") as f:
         yaml.safe_dump(payload, f, sort_keys=False, allow_unicode=True)
     print(f"\n  📁 结果已保存: {result_path}")
 
     # 自动部署
     project_root = _os.path.dirname(_here)
-    deploy_dir = _os.path.join(project_root, "handeye_bridge", "config")
-    deploy_path = _os.path.join(deploy_dir, "samples_result.yaml")
-    deploy_intrinsics = _os.path.join(deploy_dir, "camera_intrinsics.yaml")
-    if _os.path.isdir(deploy_dir) and _intrinsics_binding_matches_file(
-        intrinsics_binding, deploy_intrinsics
-    ):
-        with open(deploy_path, "w", encoding="utf-8") as f:
+    deploy_dir = _os.path.join(project_root, 'handeye_bridge', 'config')
+    deploy_path = _os.path.join(deploy_dir, 'samples_result.yaml')
+    deploy_intrinsics = _os.path.join(deploy_dir, 'camera_intrinsics.yaml')
+    if (_os.path.isdir(deploy_dir)
+            and _intrinsics_binding_matches_file(
+                intrinsics_binding, deploy_intrinsics)):
+        with open(deploy_path, 'w', encoding="utf-8") as f:
             yaml.safe_dump(payload, f, sort_keys=False, allow_unicode=True)
         print(f"  📁 已自动部署到: {deploy_path}")
     elif _os.path.isdir(deploy_dir):
@@ -1198,13 +1087,12 @@ def _solve_simple(
 
 # ── 主逻辑 ──
 
-
 def solve(samples_path, simple=False, use_ba=False):
     b2g_list, t2c_list, mode = load_samples(samples_path)
     reproj_errors, laplacian_vars, corner_rms = load_sample_metadata(samples_path)
     total_n = len(b2g_list)
 
-    # 极简模式保持为纯 OpenCV 求解：不做质量筛选、RANSAC 或 LM
+    # 极简模式保持为纯 OpenCV 求解：不做质量筛选、RANSAC 或 LM。
     if simple:
         print(f"\n{'='*55}")
         print("  手眼标定求解 (极简模式 — 全部样本直接 OpenCV)")
@@ -1214,14 +1102,8 @@ def solve(samples_path, simple=False, use_ba=False):
             print("\n❌ 极简模式至少需要 3 组样本")
             return
         return _solve_simple(
-            samples_path,
-            b2g_list,
-            t2c_list,
-            mode,
-            total_n,
-            total_samples=total_n,
-            pre_rejected=[],
-        )
+            samples_path, b2g_list, t2c_list, mode, total_n,
+            total_samples=total_n, pre_rejected=[])
 
     valid_indices, quality_rejected = load_sample_validity(samples_path)
     if quality_rejected:
@@ -1246,15 +1128,9 @@ def solve(samples_path, simple=False, use_ba=False):
         return
 
     # 调用共享核心求解逻辑
-    result = solve_handeye_core(
-        b2g_list,
-        t2c_list,
-        mode,
-        reproj_errors,
-        laplacian_vars,
-        corner_rms,
-        verbose=True,
-    )
+    result = solve_handeye_core(b2g_list, t2c_list, mode,
+                                reproj_errors, laplacian_vars, corner_rms,
+                                verbose=True)
     if result is None:
         print("\n❌ 求解失败 — 样本一致性过差，无法获得有效标定结果")
         print("   建议: 检查采集过程，确保棋盘格方向一致，机械臂位姿准确")
@@ -1283,7 +1159,7 @@ def solve(samples_path, simple=False, use_ba=False):
 
     # ── 显示结果 ──
     # OpenCV/本求解器的 X = ^gripper T_camera：相机在末端中的位姿，
-    # 可直接作为 ROS parent=tool0, child=camera_optical_frame 的静态 TF
+    # 可直接作为 ROS parent=tool0, child=camera_optical_frame 的静态 TF。
     X_display = X_final
     t = X_display[:3, 3]
     r, p, y = matrix_to_rpy(X_display[:3, :3])
@@ -1291,11 +1167,7 @@ def solve(samples_path, simple=False, use_ba=False):
 
     parent = "tool0" if mode == "eye_in_hand" else "arm_base_link"
     child = "camera_optical_frame"
-    label = (
-        "相机在末端坐标系中的位置"
-        if mode == "eye_in_hand"
-        else "相机在基座坐标系中的位置"
-    )
+    label = "相机在末端坐标系中的位置" if mode == "eye_in_hand" else "相机在基座坐标系中的位置"
 
     print(f"\n{'='*55}")
     print(f"  标定结果 (全相对运动 + 样本级 RANSAC + 鲁棒精化)")
@@ -1325,13 +1197,9 @@ def solve(samples_path, simple=False, use_ba=False):
         print(f"{'='*55}")
         try:
             from bundle_adjust import run_bundle_adjustment
-
             ba_result = run_bundle_adjustment(
-                samples_path,
-                X_init=X_final,
-                sample_indices=inlier_indices,
-                verbose=True,
-            )
+                samples_path, X_init=X_final,
+                sample_indices=inlier_indices, verbose=True)
             if ba_result is not None:
                 X_ba, Y_ba, ba_metrics = ba_result
                 ba_t_rms = float(ba_metrics["translation_rms_mm"])
@@ -1341,21 +1209,17 @@ def solve(samples_path, simple=False, use_ba=False):
                 t = X_display[:3, 3]
                 q = matrix_to_quaternion(X_display[:3, :3])
                 r, p, y = matrix_to_rpy(X_display[:3, :3])
-                metrics.update(
-                    {
-                        "trans_rms_mm": ba_t_rms,
-                        "trans_max_mm": float(ba_metrics["translation_max_mm"]),
-                        "rot_rms_deg": ba_r_rms,
-                        "rot_max_deg": float(ba_metrics["rotation_max_deg"]),
-                    }
-                )
+                metrics.update({
+                    "trans_rms_mm": ba_t_rms,
+                    "trans_max_mm": float(ba_metrics["translation_max_mm"]),
+                    "rot_rms_deg": ba_r_rms,
+                    "rot_max_deg": float(ba_metrics["rotation_max_deg"]),
+                })
                 print(f"\n  ✅ 采用 BA 精化结果")
                 print(f"     X = {t[0]:.6f} m")
                 print(f"     Y = {t[1]:.6f} m")
                 print(f"     Z = {t[2]:.6f} m")
-                print(
-                    f"  🧭 四元数 xyzw: [{q[0]:.6f}, {q[1]:.6f}, {q[2]:.6f}, {q[3]:.6f}]"
-                )
+                print(f"  🧭 四元数 xyzw: [{q[0]:.6f}, {q[1]:.6f}, {q[2]:.6f}, {q[3]:.6f}]")
                 print(f"  📏 RPY: Roll={r:.6f}  Pitch={p:.6f}  Yaw={y:.6f} rad")
         except ImportError:
             print(f"  ⚠ bundle_adjust 模块加载失败，跳过 BA 精化")
@@ -1370,7 +1234,7 @@ def solve(samples_path, simple=False, use_ba=False):
         "parent_frame": parent,
         "child_frame": child,
         "transform_matrix": X_display.tolist(),
-        "translation_m": t.tolist() if hasattr(t, "tolist") else list(t),
+        "translation_m": t.tolist() if hasattr(t, 'tolist') else list(t),
         "quaternion_xyzw": list(q),
         "rpy_rad": [float(r), float(p), float(y)],
         "translation_rms_mm": metrics["trans_rms_mm"],
@@ -1384,10 +1248,8 @@ def solve(samples_path, simple=False, use_ba=False):
         "motion_max_angle_deg": metrics.get("max_angle_deg"),
         "motion_axis_ratio": metrics.get("axis_ratio"),
         "stored_transform_convention": (
-            "camera_to_gripper (^gripper T_camera)"
-            if mode == "eye_in_hand"
-            else "camera_to_base (^base T_camera)"
-        ),
+            "camera_to_gripper (^gripper T_camera)" if mode == "eye_in_hand"
+            else "camera_to_base (^base T_camera)"),
         "removed_samples": removed_orig,
         "ba_refined": use_ba and ba_metrics is not None,
     }
@@ -1396,23 +1258,22 @@ def solve(samples_path, simple=False, use_ba=False):
         payload["intrinsics_binding"] = intrinsics_binding
     if ba_metrics:
         payload["ba_reprojection_rms_px"] = ba_metrics.get("ba_reprojection_rms_px")
-        payload["method"] = ba_metrics.get(
-            "optimization_method", payload.get("method", "")
-        )
+        payload["method"] = ba_metrics.get("optimization_method",
+                                            payload.get("method", ""))
 
-    with open(result_path, "w", encoding="utf-8") as f:
+    with open(result_path, 'w', encoding="utf-8") as f:
         yaml.safe_dump(payload, f, sort_keys=False, allow_unicode=True)
     print(f"\n  📁 结果已保存: {result_path}")
 
     # ── 自动部署到 handeye_bridge/config/ ──
     project_root = os.path.dirname(_here)  # screw_pick/
-    deploy_dir = os.path.join(project_root, "handeye_bridge", "config")
-    deploy_path = os.path.join(deploy_dir, "samples_result.yaml")
-    deploy_intrinsics = os.path.join(deploy_dir, "camera_intrinsics.yaml")
-    if os.path.isdir(deploy_dir) and _intrinsics_binding_matches_file(
-        intrinsics_binding, deploy_intrinsics
-    ):
-        with open(deploy_path, "w", encoding="utf-8") as f:
+    deploy_dir = os.path.join(project_root, 'handeye_bridge', 'config')
+    deploy_path = os.path.join(deploy_dir, 'samples_result.yaml')
+    deploy_intrinsics = os.path.join(deploy_dir, 'camera_intrinsics.yaml')
+    if (os.path.isdir(deploy_dir)
+            and _intrinsics_binding_matches_file(
+                intrinsics_binding, deploy_intrinsics)):
+        with open(deploy_path, 'w', encoding="utf-8") as f:
             yaml.safe_dump(payload, f, sort_keys=False, allow_unicode=True)
         print(f"  📁 已自动部署到: {deploy_path}")
     elif os.path.isdir(deploy_dir):
@@ -1421,7 +1282,6 @@ def solve(samples_path, simple=False, use_ba=False):
         print(f"  ⚠ 部署目录不存在: {deploy_dir}")
 
     return X_display
-
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

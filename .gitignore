@@ -1,2 +1,9 @@
 .venv/
+node_modules/
+dist/
+.runtime/
+output/
 __pycache__/
+*.pyc
+*.log
+.DS_Store
