@@ -55,8 +55,6 @@ function assembleRenderer() {
     .replace(/\s*<meta http-equiv="Content-Security-Policy"[^>]+\/>/, '')
     .replace(/<link rel="stylesheet" href="styles\.css"\s*\/>/, `<style>${css}</style>`)
     .replace(/<script src="app\.js"><\/script>/, '')
-  // about:blank doesn't expose localStorage in this managed sandbox. This is
-  // test-only assembly; production Electron loads the exact original files
   js = js
     .replace(
       "const api = window.handeye || (location.search.includes('mock=1') ? createMockApi() : null)",
@@ -71,7 +69,7 @@ async function waitJson(port) {
   for (let i = 0; i < 60; i++) {
     try {
       const r = await fetch(`http://127.0.0.1:${port}/json`)
-      if (r.ok) return await r.json()
+      if (r.ok) { const pages = await r.json(); if (pages.length) return pages }
     } catch {}
     await sleep(100)
   }
@@ -82,6 +80,16 @@ async function evalValue(cdp, expression) {
   const out = await cdp.call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
   if (out.exceptionDetails) throw new Error(out.exceptionDetails.text || 'renderer evaluation failed')
   return out.result?.value
+}
+
+async function waitForPageTitle(cdp, expected, timeoutMs = 1800) {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    const title = await evalValue(cdp, 'document.querySelector(".page-title")?.textContent')
+    if (title === expected) return
+    await sleep(25)
+  }
+  throw new Error(`page transition timed out waiting for ${expected}`)
 }
 
 async function main() {
@@ -131,18 +139,27 @@ async function main() {
       ['intrinsics', 'Camera Intrinsics'], ['handeye', 'Hand-Eye Sampling'],
       ['solve', 'Solve & Verify'], ['settings', 'Settings'], ['about', 'About HandEye']
     ]
+    await evalValue(cdp, `document.querySelector('[data-page="intrinsics"]').click(); true`)
+    await sleep(70)
+    const retainedDuringExit = await evalValue(cdp, 'document.querySelector(".page-title")?.textContent')
+    if (retainedDuringExit !== 'Connect') throw new Error(`outgoing page was replaced too early: ${retainedDuringExit}`)
+    await waitForPageTitle(cdp, 'Camera Intrinsics')
     for (const [page, expected] of pagesToCheck) {
-      const actual = await evalValue(cdp, `document.querySelector('[data-page="${page}"]').click(); document.querySelector('.page-title')?.textContent`)
-      if (actual !== expected) throw new Error(`page ${page}: expected ${expected}, got ${actual}`)
+      if (page !== 'intrinsics') {
+        await evalValue(cdp, `document.querySelector('[data-page="${page}"]').click(); true`)
+        await waitForPageTitle(cdp, expected)
+      }
       const visibleText = await evalValue(cdp, 'document.querySelector(".content").innerText.toLowerCase()')
       if (visibleText.includes('kudu')) throw new Error(`reference project name visible on ${page}`)
     }
     await evalValue(cdp, `document.querySelector('[data-page="handeye"]').click(); true`)
+    await waitForPageTitle(cdp, 'Hand-Eye Sampling')
     const poseStable = await evalValue(cdp, `(() => { const node=document.querySelector('#page > .page'); handleEvent({event:'pose',data:{values:[0.4,0,0.5,0,0,0,1],frame_id:'arm_base_link',timestamp:1}}); return document.querySelector('#page > .page')===node })()`)
     if (!poseStable) throw new Error('Pose event rebuilt the page')
     await evalValue(cdp, `state.data.ros.running=false; state.data.ros.pose=null; true`)
-    // Exercise the primary GUI workflow against the in-renderer mock API
-    await evalValue(cdp, `document.querySelector('[data-page="connect"]').click(); document.querySelector('#open-camera').click(); true`)
+    await evalValue(cdp, `document.querySelector('[data-page="connect"]').click(); true`)
+    await waitForPageTitle(cdp, 'Connect')
+    await evalValue(cdp, `document.querySelector('#open-camera').click(); true`)
     for (let i = 0; i < 50; i++) {
       const ready = await evalValue(cdp, `document.querySelectorAll('.metric-value')[0]?.textContent.trim() === 'Connected'`)
       if (ready) break
@@ -157,7 +174,15 @@ async function main() {
       if (i === 49) throw new Error('ROS2 Connect action did not update status')
     }
 
-    await evalValue(cdp, `document.querySelector('[data-page="intrinsics"]').click(); document.querySelector('#intrinsic-quality [data-value="minimal"]').click(); true`)
+    await evalValue(cdp, `document.querySelector('[data-page="intrinsics"]').click(); true`)
+    await waitForPageTitle(cdp, 'Camera Intrinsics')
+    const segmentStable = await evalValue(cdp, `(() => { const page=document.querySelector('#page > .page'); const indicator=document.querySelector('#intrinsic-quality .segmented-indicator'); window.__segmentBefore=indicator.style.transform; document.querySelector('#intrinsic-quality [data-value="strict"]').click(); return {same:document.querySelector('#page > .page')===page,before:window.__segmentBefore} })()`)
+    if (!segmentStable.same) throw new Error('Segmented control rebuilt the page')
+    await sleep(360)
+    const indicatorMoved = await evalValue(cdp, `document.querySelector('#intrinsic-quality .segmented-indicator').style.transform !== window.__segmentBefore`)
+    if (!indicatorMoved) throw new Error('Segmented indicator did not move')
+    await evalValue(cdp, `document.querySelector('#intrinsic-quality [data-value="minimal"]').click(); true`)
+    await sleep(340)
     for (let capture = 1; capture <= 3; capture++) {
       await evalValue(cdp, `document.querySelector('#capture-intrinsic').click(); true`)
       for (let i = 0; i < 50; i++) {
@@ -175,7 +200,12 @@ async function main() {
       if (i === 49) throw new Error('Solve Intrinsics action did not produce Ready state')
     }
 
-    await evalValue(cdp, `document.querySelector('[data-page="handeye"]').click(); document.querySelector('#sample-mode [data-value="manual"]').click(); true`)
+    await evalValue(cdp, `document.querySelector('[data-page="handeye"]').click(); true`)
+    await waitForPageTitle(cdp, 'Hand-Eye Sampling')
+    await evalValue(cdp, `document.querySelector('#sample-mode [data-value="manual"]').click(); true`)
+    await sleep(420)
+    const manualOpen = await evalValue(cdp, `document.querySelector('#manual-input-panel').classList.contains('open')`)
+    if (!manualOpen) throw new Error('Manual input panel did not open')
     await evalValue(cdp, `document.querySelector('#capture-handeye').click(); true`)
     for (let i = 0; i < 50; i++) {
       const text = await evalValue(cdp, `document.querySelector('.content').innerText`)
@@ -186,7 +216,9 @@ async function main() {
     await evalValue(cdp, `document.querySelector('#save-samples').click(); true`)
     await sleep(100)
 
-    await evalValue(cdp, `document.querySelector('[data-page="solve"]').click(); document.querySelector('#run-solve').click(); true`)
+    await evalValue(cdp, `document.querySelector('[data-page="solve"]').click(); true`)
+    await waitForPageTitle(cdp, 'Solve & Verify')
+    await evalValue(cdp, `document.querySelector('#run-solve').click(); true`)
     for (let i = 0; i < 50; i++) {
       const text = await evalValue(cdp, `document.querySelector('.content').innerText`)
       if (text.includes('Solved') && text.includes('2.310')) break
@@ -194,7 +226,9 @@ async function main() {
       if (i === 49) throw new Error('Solve action did not render mock transform result')
     }
 
-    const settingsText = await evalValue(cdp, `document.querySelector('[data-page="settings"]').click(); document.querySelector('.content').innerText`)
+    await evalValue(cdp, `document.querySelector('[data-page="settings"]').click(); true`)
+    await waitForPageTitle(cdp, 'Settings')
+    const settingsText = await evalValue(cdp, `document.querySelector('.content').innerText`)
     if (!settingsText.includes('Install Runtime') && !settingsText.includes('Repair Runtime')) {
       throw new Error('Settings runtime action missing')
     }
@@ -208,10 +242,22 @@ async function main() {
     if (!String(theme).includes('light')) throw new Error('Light theme toggle failed')
 
     await evalValue(cdp, `document.querySelector('#theme-segment [data-theme="dark"]').click(); document.querySelector('[data-page="connect"]').click(); document.querySelector('#toasts').innerHTML=''; true`)
+    await waitForPageTitle(cdp, 'Connect')
     await sleep(180)
     const appearanceClosed = await evalValue(cdp, `document.querySelector('#appearance-menu').classList.contains('hidden')`)
     if (!appearanceClosed) throw new Error('Appearance menu remained open after navigation')
+    await cdp.call('Emulation.setDeviceMetricsOverride', { width: 880, height: 820, deviceScaleFactor: 1, mobile: false })
+    await evalValue(cdp, `syncResponsiveShell(); true`)
+    await sleep(120)
+    const compactSidebar = await evalValue(cdp, `(() => { const el=document.querySelector('.sidebar'); return {compact:el.classList.contains('compact'),width:el.getBoundingClientRect().width} })()`)
+    if (!compactSidebar.compact || compactSidebar.width > 80) throw new Error(`Responsive compact sidebar failed: ${JSON.stringify(compactSidebar)}`)
+    await cdp.call('Emulation.setDeviceMetricsOverride', { width: 1020, height: 860, deviceScaleFactor: 1, mobile: false })
+    await evalValue(cdp, `syncResponsiveShell(); true`)
+    await sleep(120)
+    const previewColumns = await evalValue(cdp, `getComputedStyle(document.querySelector('.preview-layout')).gridTemplateColumns`)
+    if (String(previewColumns).trim().split(' ').length !== 1) throw new Error(`Responsive preview layout did not collapse: ${previewColumns}`)
     await cdp.call('Emulation.setDeviceMetricsOverride', { width: 1460, height: 940, deviceScaleFactor: 1, mobile: false })
+    await evalValue(cdp, `syncResponsiveShell(); true`)
     await sleep(250)
     const shot = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
     writeFileSync(SCREENSHOT, Buffer.from(shot.data, 'base64'))
@@ -219,7 +265,6 @@ async function main() {
   } finally {
     try { cdp?.close() } catch {}
     try { child.kill('SIGTERM') } catch {}
-    // Chromium may still be flushing profile files after SIGTERM; leave the temporary profile to the OS cleanup
   }
 }
 

@@ -27,6 +27,11 @@ const iconPaths = {
 function icon(name, cls='') { return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[name]||iconPaths.info}</svg>` }
 function themeIcon(theme){return theme==='light'?'sun':theme==='dark'?'moon':'monitor'}
 
+const PAGE_EXIT_MS = 160
+const PAGE_ENTER_MS = 420
+let navigationEpoch = 0
+let responsiveListenerBound = false
+
 const state = {
   page:'connect', theme:localStorage.getItem('handeye-theme') || 'dark', backend:'starting', runtime:null,
   data:{ config:{output_dir:'',camera_index:0,camera_width:640,camera_height:480,chessboard_cols:11,chessboard_rows:8,square_size_mm:15,ros_input_type:'pose',pose_topic:'/arm/pose',joint_dof:5,joint_names:'',capture_topic:'',status_topic:'/handeye/status'}, camera:{open:false,board_found:false,width:640,height:480}, ros:{running:false,pose:null}, intrinsics:{count:0,exists:false}, handeye:{count:0,samples_exists:false}, output_dir:'' },
@@ -120,7 +125,27 @@ function shell(){
 }
 function nav(page,ico,label,step){return `<button class="nav-item" data-page="${page}">${icon(ico)}<span>${label}</span>${step?`<span class="step">${step}</span>`:''}</button>`}
 function closeAppearanceMenu(){const menu=$('#appearance-menu');if(!menu)return;menu.classList.remove('visible');setTimeout(()=>menu.classList.add('hidden'),130)}
-function navigate(page){closeAppearanceMenu();if(page===state.page)return;state.page=page;renderPage(true);requestAnimationFrame(()=>{$('.content').scrollTop=0})}
+function prefersReducedMotion(){return matchMedia('(prefers-reduced-motion: reduce)').matches}
+async function transitionToPage(page){
+  if(page===state.page)return
+  const epoch=++navigationEpoch
+  const oldPage=$('#page > .page')
+  if(oldPage&&!prefersReducedMotion()){
+    try{
+      await oldPage.animate([
+        {opacity:1,transform:'translate3d(0,0,0) scale(1)'},
+        {opacity:.18,transform:'translate3d(0,-6px,0) scale(.996)'}
+      ],{duration:PAGE_EXIT_MS,easing:'cubic-bezier(.4,0,.6,1)',fill:'forwards'}).finished
+    }catch{}
+    if(epoch!==navigationEpoch)return
+  }
+  state.page=page
+  renderPage(false)
+  const content=$('.content')
+  if(content)content.scrollTop=0
+  if(!prefersReducedMotion())animateCurrentPage()
+}
+function navigate(page){closeAppearanceMenu();void transitionToPage(page)}
 
 function pageHead(kicker,title,desc,actions=''){return `<div class="page-head"><div class="page-head-main"><div class="page-kicker">${kicker}</div><h2 class="page-title">${title}</h2><p class="page-description">${desc}</p></div>${actions?`<div class="page-actions">${actions}</div>`:''}</div>`}
 function card(title,subtitle,ico,body,footer='',accent=false){return `<section class="card"><div class="card-head"><span class="card-icon ${accent?'accent':''}">${icon(ico)}</span><div><h3 class="card-title">${title}</h3>${subtitle?`<p class="card-subtitle">${subtitle}</p>`:''}</div></div><div class="card-body">${body}</div>${footer?`<div class="card-footer">${footer}</div>`:''}</section>`}
@@ -137,22 +162,26 @@ ${card('Robot Interface','自动模式保持主仓库 PoseStamped / JointState �
 </div></div></div>`}
 
 function boardFields(){const c=state.data.config;return `<div class="form-row three">${field('角点列数','board-cols',c.chessboard_cols,'number')}${field('角点行数','board-rows',c.chessboard_rows,'number')}${field('方格边长 / mm','square-mm',c.square_size_mm,'number')}</div>`}
-function qualitySegment(id,current){return `<div class="segmented amber" id="${id}"><button data-value="standard" class="${current==='standard'?'active':''}">标准</button><button data-value="strict" class="${current==='strict'?'active':''}">严格</button><button data-value="minimal" class="${current==='minimal'?'active':''}">极简</button></div>`}
+function segmentedControl(id,current,options,extraClass='amber'){
+  return `<div class="segmented ${extraClass}" id="${id}"><span class="segmented-indicator" aria-hidden="true"></span>${options.map(([value,label])=>`<button data-value="${value}" class="${current===value?'active':''}">${label}</button>`).join('')}</div>`
+}
+function qualitySegment(id,current){return segmentedControl(id,current,[['standard','标准'],['strict','严格'],['minimal','极简']])}
 function renderIntrinsics(){const x=state.data.intrinsics||{},cam=state.data.camera;const target=state.intrinsicQuality==='strict'?15:state.intrinsicQuality==='minimal'?3:10;const pct=Math.min(100,(x.count||0)/target*100);return `<div class="page">${pageHead('Calibration · Step 02','Camera Intrinsics','采集不同位置、距离和倾角的棋盘图像质量门限、最少图片数和 OpenCV 标定行为完全来自主仓库',btn('go-handeye','Next: Hand-Eye','chevron'))}
 <div class="grid preview-layout">${preview()}<div class="stack">${card('Calibration Board','内参与外参必须使用相同棋盘参数','scan',boardFields(),`${btn('save-board','保存棋盘参数','save')}`)}
-${card('Capture Session','标准模式建议 20–30 张；绿色检测后再采集','camera',`<div class="progress-label"><span>已采集 ${x.count||0} 张</span><span>最低 ${target} 张</span></div><div class="progress-track"><div class="progress-bar" style="width:${pct}%"></div></div><div style="margin-top:14px"><div class="field"><label>采样质量</label>${qualitySegment('intrinsic-quality',state.intrinsicQuality)}</div></div><div class="grid two" style="margin-top:13px"><div class="metric"><div class="metric-label">Chessboard</div><div class="metric-value" id="board-live" style="font-size:17.25px;color:${cam.board_found?'var(--success)':'var(--warning)'}">${cam.board_found?'Detected':'Not detected'}</div></div><div class="metric"><div class="metric-label">Intrinsics file</div><div class="metric-value" style="font-size:17.25px;color:${x.exists?'var(--success)':'var(--text-secondary)'}">${x.exists?'Ready':'Pending'}</div></div></div>`,`<div class="actions">${btn('capture-intrinsic','Capture','camera','primary large',cam.open?'':'disabled')}${btn('solve-intrinsic','Solve & Save','flask','',x.count>=target?'':'disabled')}${btn('clear-intrinsic','Clear','trash','danger')}</div>`,true)}
+${card('Capture Session','标准模式建议 20–30 张；绿色检测后再采集','camera',`<div class="progress-label"><span>已采集 ${x.count||0} 张</span><span id="intrinsic-target">最低 ${target} 张</span></div><div class="progress-track"><div class="progress-bar" id="intrinsic-progress" style="width:${pct}%"></div></div><div style="margin-top:14px"><div class="field"><label>采样质量</label>${qualitySegment('intrinsic-quality',state.intrinsicQuality)}</div></div><div class="grid two" style="margin-top:13px"><div class="metric"><div class="metric-label">Chessboard</div><div class="metric-value" id="board-live" style="font-size:17.25px;color:${cam.board_found?'var(--success)':'var(--warning)'}">${cam.board_found?'Detected':'Not detected'}</div></div><div class="metric"><div class="metric-label">Intrinsics file</div><div class="metric-value" style="font-size:17.25px;color:${x.exists?'var(--success)':'var(--text-secondary)'}">${x.exists?'Ready':'Pending'}</div></div></div>`,`<div class="actions">${btn('capture-intrinsic','Capture','camera','primary large',cam.open?'':'disabled')}${btn('solve-intrinsic','Solve & Save','flask','',x.count>=target?'':'disabled')}${btn('clear-intrinsic','Clear','trash','danger')}</div>`,true)}
 ${state.intrinsicResult?`<div class="callout">${icon('check')}<div><b>内参已保存</b><br>RMS ${n(state.intrinsicResult.reprojection_error_px,4)} px · Median ${n(state.intrinsicResult.reprojection_error_median_px,4)} px · Max ${n(state.intrinsicResult.reprojection_error_max_px,4)} px</div></div>`:''}</div></div></div>`}
 
 function poseText(){const p=state.data.ros?.pose;if(!p)return 'Waiting for robot data';const v=p.values||[];return `frame : ${p.frame_id||'-'}\nxyz   : ${n(v[0],5)}  ${n(v[1],5)}  ${n(v[2],5)} m\nxyzw  : ${n(v[3],5)}  ${n(v[4],5)}  ${n(v[5],5)}  ${n(v[6],5)}`}
 function manualFields(){let labels=state.manualType==='quaternion'?['x','y','z','qx','qy','qz','qw']:state.manualType==='rpy'?['x','y','z','roll','pitch','yaw']:Array.from({length:Number(state.data.config.joint_dof)||5},(_,i)=>`q${i+1}`);return `<div class="form-row three">${labels.map((l,i)=>field(l,`manual-${i}`,state.manualType==='quaternion'&&i===6?1:0,'number')).join('')}</div>`}
+function manualInputPanel(){return `<div class="manual-input-panel ${state.sampleMode==='manual'?'open':''}" id="manual-input-panel"><div class="manual-input-inner"><div class="divider"></div><div class="form-row"><div class="field"><label>手动类型</label><select class="control" id="manual-type"><option value="quaternion" ${state.manualType==='quaternion'?'selected':''}>末端位姿 · Quaternion</option><option value="rpy" ${state.manualType==='rpy'?'selected':''}>末端位姿 · RPY</option><option value="joints" ${state.manualType==='joints'?'selected':''}>Joint angles</option></select></div><div class="field"><label>角度单位</label><select class="control" id="angle-unit"><option value="deg" ${state.angleUnit==='deg'?'selected':''}>deg</option><option value="rad" ${state.angleUnit==='rad'?'selected':''}>rad</option></select></div></div><div id="manual-fields" style="margin-top:11px">${manualFields()}</div></div></div>`}
 function renderHandeye(){const h=state.data.handeye||{},ros=state.data.ros||{};const target=20,pct=Math.min(100,(h.count||0)/target*100);return `<div class="page">${pageHead('Calibration · Step 03','Hand-Eye Sampling','固定棋盘，改变机械臂位置与姿态每次 Capture 保存当前图像与当前机器人位姿的一组样本',btn('go-solve','Next: Solve','chevron'))}
-<div class="grid preview-layout">${preview()}<div class="stack">${card('Robot Pose',ros.running?'ROS2 自动数据正在接收':'可选择 ROS2 自动或手动输入','target',`<div class="pose-box" id="pose-live">${escapeHtml(poseText())}</div><div style="margin-top:12px"><div class="field"><label>采样来源</label><div class="segmented amber" id="sample-mode"><button data-value="auto" class="${state.sampleMode==='auto'?'active':''}">ROS2 自动</button><button data-value="manual" class="${state.sampleMode==='manual'?'active':''}">手动输入</button></div></div></div>${state.sampleMode==='manual'?`<div class="divider"></div><div class="form-row"><div class="field"><label>手动类型</label><select class="control" id="manual-type"><option value="quaternion" ${state.manualType==='quaternion'?'selected':''}>末端位姿 · Quaternion</option><option value="rpy" ${state.manualType==='rpy'?'selected':''}>末端位姿 · RPY</option><option value="joints" ${state.manualType==='joints'?'selected':''}>Joint angles</option></select></div><div class="field"><label>角度单位</label><select class="control" id="angle-unit"><option value="deg" ${state.angleUnit==='deg'?'selected':''}>deg</option><option value="rad" ${state.angleUnit==='rad'?'selected':''}>rad</option></select></div></div><div style="margin-top:11px">${manualFields()}</div>`:''}`)}
-${card('Sample Collection','标准质量建议采集 20–30 组，并覆盖多轴旋转','scan',`<div class="progress-label"><span>${h.count||0} captured samples</span><span>${target} recommended</span></div><div class="progress-track"><div class="progress-bar" style="width:${pct}%"></div></div><div style="margin-top:14px"><div class="field"><label>采样质量</label>${qualitySegment('handeye-quality',state.handeyeQuality)}</div></div><div class="grid three" style="margin-top:13px"><div class="metric"><div class="metric-label">Samples</div><div class="metric-value">${h.count||0}</div></div><div class="metric"><div class="metric-label">Camera</div><div class="metric-value" style="font-size:16.1px;color:${state.data.camera?.open?'var(--success)':'var(--warning)'}">${state.data.camera?.open?'Ready':'Offline'}</div></div><div class="metric"><div class="metric-label">Robot</div><div class="metric-value" style="font-size:16.1px;color:${state.sampleMode==='manual'||ros.pose?'var(--success)':'var(--warning)'}">${state.sampleMode==='manual'?'Manual':ros.pose?'Ready':'Waiting'}</div></div></div>`,`<div class="actions">${btn('capture-handeye','Capture Sample','target','primary large')}${btn('save-samples','Save samples.yaml','save')}${btn('clear-samples','Clear','trash','danger')}</div>`,true)}</div></div></div>`}
+<div class="grid preview-layout">${preview()}<div class="stack">${card('Robot Pose',ros.running?'ROS2 自动数据正在接收':'可选择 ROS2 自动或手动输入','target',`<div class="pose-box" id="pose-live">${escapeHtml(poseText())}</div><div style="margin-top:12px"><div class="field"><label>采样来源</label>${segmentedControl('sample-mode',state.sampleMode,[['auto','ROS2 自动'],['manual','手动输入']])}</div></div>${manualInputPanel()}`)}
+${card('Sample Collection','标准质量建议采集 20–30 组，并覆盖多轴旋转','scan',`<div class="progress-label"><span>${h.count||0} captured samples</span><span>${target} recommended</span></div><div class="progress-track"><div class="progress-bar" style="width:${pct}%"></div></div><div style="margin-top:14px"><div class="field"><label>采样质量</label>${qualitySegment('handeye-quality',state.handeyeQuality)}</div></div><div class="grid three" style="margin-top:13px"><div class="metric"><div class="metric-label">Samples</div><div class="metric-value">${h.count||0}</div></div><div class="metric"><div class="metric-label">Camera</div><div class="metric-value" style="font-size:16.1px;color:${state.data.camera?.open?'var(--success)':'var(--warning)'}">${state.data.camera?.open?'Ready':'Offline'}</div></div><div class="metric"><div class="metric-label">Robot</div><div class="metric-value" id="robot-source-status" style="font-size:16.1px;color:${state.sampleMode==='manual'||ros.pose?'var(--success)':'var(--warning)'}">${state.sampleMode==='manual'?'Manual':ros.pose?'Ready':'Waiting'}</div></div></div>`,`<div class="actions">${btn('capture-handeye','Capture Sample','target','primary large')}${btn('save-samples','Save samples.yaml','save')}${btn('clear-samples','Clear','trash','danger')}</div>`,true)}</div></div></div>`}
 
 function matrixHtml(result){const m=result?.transform_matrix;if(!Array.isArray(m)||m.length!==4)return '<div class="pose-box">Waiting for solve result</div>';return `<div class="result-matrix">${m.flat().map(v=>`<span>${n(v,6)}</span>`).join('')}</div>`}
 function renderSolve(){const h=state.data.handeye||{};const r=state.solveResult;return `<div class="page">${pageHead('Calibration · Step 04','Solve & Verify','调用主仓库 algorithms/diagnose.py、solve.py、verify.pyGUI 只负责触发和展示，不改变任何求解数学')}
 <div class="grid two" style="margin-bottom:14px"><div class="metric"><div class="metric-label">samples.yaml</div><div class="metric-value" style="font-size:17.25px;color:${h.samples_exists?'var(--success)':'var(--warning)'}">${h.samples_exists?'Ready':'Not saved'}</div><div class="metric-meta">${escapeHtml(h.samples_path||'')}</div></div><div class="metric"><div class="metric-label">Result</div><div class="metric-value" style="font-size:17.25px;color:${r?'var(--success)':'var(--text-secondary)'}">${r?'Solved':'Waiting'}</div><div class="metric-meta">samples_result.yaml</div></div></div>
-<div class="grid preview-layout"><div class="stack">${card('Calibration Pipeline','按需运行，也可依次执行 Diagnose → Solve → Verify','flask',`<div class="field"><label>求解模式</label><div class="segmented amber" id="solve-mode"><button data-value="robust" class="${state.solveMode==='robust'?'active':''}">Robust</button><button data-value="minimal" class="${state.solveMode==='minimal'?'active':''}">OpenCV</button><button data-value="ba" class="${state.solveMode==='ba'?'active':''}">Bundle Adjustment</button></div></div><div class="divider"></div><div class="actions">${btn('run-diagnose','Diagnose','scan')}${btn('run-solve','Solve','play','primary')}${btn('run-verify','Verify','check')}</div>`)}
+<div class="grid preview-layout"><div class="stack">${card('Calibration Pipeline','按需运行，也可依次执行 Diagnose → Solve → Verify','flask',`<div class="field"><label>求解模式</label>${segmentedControl('solve-mode',state.solveMode,[['robust','Robust'],['minimal','OpenCV'],['ba','Bundle Adjustment']])}</div><div class="divider"></div><div class="actions">${btn('run-diagnose','Diagnose','scan')}${btn('run-solve','Solve','play','primary')}${btn('run-verify','Verify','check')}</div>`)}
 ${card('Transform Result','默认 eye-in-hand 输出 ^gripper T_camera','target',`${matrixHtml(r)}${r?`<div class="grid two" style="margin-top:12px"><div class="metric"><div class="metric-label">Translation RMS</div><div class="metric-value">${n(r.translation_rms_mm,3)}<small>mm</small></div></div><div class="metric"><div class="metric-label">Rotation RMS</div><div class="metric-value">${n(r.rotation_rms_deg,3)}<small>deg</small></div></div></div>`:''}`)}</div>
 ${card('Algorithm Log','标准输出实时转发，便于诊断数据质量','terminal',`<div class="log-box" id="log-box">${escapeHtml(state.logs||'No algorithm output yet\n')}</div>`,`<span style="font-size:11.5px;color:var(--text-dim)">Core files are protected by verify_core.py</span>`)}</div></div>`}
 
@@ -161,20 +190,20 @@ ROS    : ${escapeHtml(rt.rosDistro||'not detected')}
 Setup  : ${escapeHtml(rt.rosSetup||'not detected')}
 Python : ${escapeHtml(rt.python||'unknown')}
 App    : ${escapeHtml(rt.appVersion||'dev')}</div><div class="help" style="margin-top:10px">Ubuntu 20.04 → Foxy · 22.04 → Humble · 24.04 → Jazzy<br>Release 可在用户目录创建独立 .venv，不写入系统目录</div><div class="mini-log ${state.runtimeInstallLog?'':'hidden'}" id="runtime-install-log">${escapeHtml(state.runtimeInstallLog.slice(-5000))}</div>`,`<div class="actions"><button class="btn primary" id="install-runtime" ${state.runtimeInstallState==='running'?'disabled':''}>${icon('play')}<span id="install-runtime-label">${state.runtimeInstallState==='running'?'Installing':installed?'Repair Runtime':'Install Runtime'}</span></button><button class="btn" id="restart-backend">${icon('terminal')}Restart Backend</button></div>`,true)}</div></div>`}
-function renderAbout(){return `<div class="page">${pageHead('AgroTech · SCAU','About HandEye','现代化手眼标定桌面应用，提供标定采集、求解验证与 Linux 桌面运行环境')}<div class="grid two">${card('Interface','专注清晰的桌面工作流','info',`<div class="callout">${icon('info')}<div><b>Focused calibration workflow</b><br>深色玻璃卡片、Amber accent、自定义 titlebar、sidebar workflow 与轻量微动画</div></div>`)}${card('Core Integrity','核心计算文件保持受保护边界','check',`<div class="stack"><div class="runtime-line">${dot('success')} algorithm_runner.py protected</div><div class="runtime-line">${dot('success')} calibration_engine.py protected</div><div class="runtime-line">${dot('success')} ros_interface.py protected</div><div class="runtime-line">${dot('success')} algorithms/* protected</div></div>`)}</div></div>`}
+function renderAbout(){return `<div class="page">${pageHead('AgroTech · SCAU','About HandEye','面向 ROS2 的手眼标定桌面工具，提供采集、求解验证与 Linux 桌面运行环境')}<div class="grid two">${card('使用体验','围绕实际标定任务保持流程清晰且连续','info',`<div class="callout">${icon('info')}<div><b>专注标定流程</b><br>减少配置、采样与求解过程中的操作干扰，让关键状态和下一步动作保持明确</div></div>`)}${card('Core Integrity','核心计算文件保持受保护边界','check',`<div class="stack"><div class="runtime-line">${dot('success')} algorithm_runner.py protected</div><div class="runtime-line">${dot('success')} calibration_engine.py protected</div><div class="runtime-line">${dot('success')} ros_interface.py protected</div><div class="runtime-line">${dot('success')} algorithms/* protected</div></div>`)}</div></div>`}
 
 function animateCurrentPage(){
   const page=$('#page > .page')
   if(!page)return
   requestAnimationFrame(()=>{
     page.animate([
-      {opacity:0,transform:'translate3d(0,9px,0)'},
+      {opacity:.08,transform:'translate3d(0,12px,0) scale(.997)'},
+      {opacity:1,transform:'translate3d(0,0,0) scale(1)'}
+    ],{duration:PAGE_ENTER_MS,easing:'cubic-bezier(.16,1,.3,1)',fill:'both'})
+    $$('.card',page).slice(0,10).forEach((card,index)=>card.animate([
+      {opacity:.48,transform:'translate3d(0,8px,0)'},
       {opacity:1,transform:'translate3d(0,0,0)'}
-    ],{duration:260,easing:'cubic-bezier(.16,1,.3,1)'})
-    $$('.card',page).slice(0,8).forEach((card,index)=>card.animate([
-      {opacity:.72,transform:'translate3d(0,5px,0)'},
-      {opacity:1,transform:'translate3d(0,0,0)'}
-    ],{duration:240,delay:index*18,easing:'cubic-bezier(.16,1,.3,1)',fill:'both'}))
+    ],{duration:460,delay:32+index*24,easing:'cubic-bezier(.16,1,.3,1)',fill:'both'}))
   })
 }
 
@@ -201,9 +230,55 @@ async function request(method,params={},okMessage=''){
   try{const r=await api.request(method,params);if(okMessage)toast(okMessage,'','success');return r}catch(e){toast('操作失败',e.message||String(e),'danger');throw e}
 }
 async function saveConfig(scope='connect'){const r=await request('set_config',configFromForm(scope),'设置已保存');state.data=r;renderPage()}
-function bindSegment(id,key){const el=$('#'+id);if(!el)return;$$('button',el).forEach(b=>b.onclick=()=>{state[key]=b.dataset.value;renderPage()})}
+function syncSegmentIndicator(el,animate=true){
+  if(!el)return
+  const indicator=$('.segmented-indicator',el)
+  const active=$('button.active',el)
+  if(!indicator||!active)return
+  const host=el.getBoundingClientRect()
+  const rect=active.getBoundingClientRect()
+  if(!animate)indicator.style.transition='none'
+  indicator.style.width=`${rect.width}px`
+  indicator.style.transform=`translate3d(${rect.left-host.left}px,0,0)`
+  if(!animate)requestAnimationFrame(()=>indicator.style.removeProperty('transition'))
+}
+function syncAllSegmentIndicators(animate=false){$$('.segmented').forEach(el=>syncSegmentIndicator(el,animate))}
+function updateIntrinsicQualityView(){
+  const x=state.data.intrinsics||{}
+  const target=state.intrinsicQuality==='strict'?15:state.intrinsicQuality==='minimal'?3:10
+  const count=x.count||0
+  const targetEl=$('#intrinsic-target')
+  const progress=$('#intrinsic-progress')
+  const solve=$('#solve-intrinsic')
+  if(targetEl)targetEl.textContent=`最低 ${target} 张`
+  if(progress)progress.style.width=`${Math.min(100,count/target*100)}%`
+  if(solve)solve.disabled=count<target
+}
+function updateSampleModeView(){
+  const panel=$('#manual-input-panel')
+  panel?.classList.toggle('open',state.sampleMode==='manual')
+  const status=$('#robot-source-status')
+  if(status){
+    const pose=state.data.ros?.pose
+    status.textContent=state.sampleMode==='manual'?'Manual':pose?'Ready':'Waiting'
+    status.style.color=state.sampleMode==='manual'||pose?'var(--success)':'var(--warning)'
+  }
+}
+function refreshManualFields(){const host=$('#manual-fields');if(host)host.innerHTML=manualFields()}
+function bindSegment(id,key,onChange){
+  const el=$('#'+id)
+  if(!el)return
+  requestAnimationFrame(()=>syncSegmentIndicator(el,false))
+  $$('button',el).forEach(b=>b.onclick=()=>{
+    if(b.classList.contains('active'))return
+    state[key]=b.dataset.value
+    $$('button',el).forEach(item=>item.classList.toggle('active',item===b))
+    syncSegmentIndicator(el,true)
+    onChange?.(b.dataset.value)
+  })
+}
 function bindPage(){
-  bindSegment('intrinsic-quality','intrinsicQuality');bindSegment('handeye-quality','handeyeQuality');bindSegment('sample-mode','sampleMode');bindSegment('solve-mode','solveMode')
+  bindSegment('intrinsic-quality','intrinsicQuality',updateIntrinsicQualityView);bindSegment('handeye-quality','handeyeQuality');bindSegment('sample-mode','sampleMode',updateSampleModeView);bindSegment('solve-mode','solveMode')
   $('#browse-output')?.addEventListener('click',async()=>{const p=await api?.selectDirectory($('#output-dir').value);if(p)$('#output-dir').value=p})
   $('#save-connect')?.addEventListener('click',()=>saveConfig('connect'))
   $('#open-camera')?.addEventListener('click',async()=>{await saveConfig('connect');await request('open_camera',{},'相机已打开');await refreshState()})
@@ -215,7 +290,7 @@ function bindPage(){
   $('#solve-intrinsic')?.addEventListener('click',async()=>{state.intrinsicResult=await request('solve_intrinsic',{quality_mode:state.intrinsicQuality},'内参已计算并保存');await refreshState();renderPage()})
   $('#clear-intrinsic')?.addEventListener('click',async()=>{await request('clear_intrinsic',{},'内参采样已清空');state.intrinsicResult=null;await refreshState()})
   $('#go-handeye')?.addEventListener('click',()=>navigate('handeye'));$('#go-solve')?.addEventListener('click',()=>navigate('solve'))
-  $('#manual-type')?.addEventListener('change',e=>{state.manualType=e.target.value;renderPage()});$('#angle-unit')?.addEventListener('change',e=>{state.angleUnit=e.target.value;renderPage()})
+  $('#manual-type')?.addEventListener('change',e=>{state.manualType=e.target.value;refreshManualFields()});$('#angle-unit')?.addEventListener('change',e=>{state.angleUnit=e.target.value})
   $('#capture-handeye')?.addEventListener('click',async()=>{const params={mode:state.sampleMode,quality_mode:state.handeyeQuality};if(state.sampleMode==='manual'){params.manual_type=state.manualType;params.angle_unit=state.angleUnit;params.values=$$('[id^="manual-"]').map(e=>Number(e.value))}const r=await request('capture_handeye',params,'手眼样本已采集');toast('样本质量',`Reproj ${n(r.reprojection_error_px,3)} px · ${n(r.pixels_per_square,1)} px/square`,'success');await refreshState()})
   $('#save-samples')?.addEventListener('click',async()=>{const r=await request('save_samples',{},'samples.yaml 已保存');toast('保存完成',r.path,'success');await refreshState()})
   $('#clear-samples')?.addEventListener('click',async()=>{await request('clear_samples',{},'外参样本已清空');await refreshState()})
@@ -225,6 +300,11 @@ function bindPage(){
   const theme=$('#theme-segment');if(theme)$$('button',theme).forEach(b=>b.onclick=()=>applyTheme(b.dataset.theme))
 }
 
+function syncResponsiveShell(){
+  const sidebar=$('.sidebar')
+  sidebar?.classList.toggle('compact',innerWidth<=900)
+  requestAnimationFrame(()=>syncAllSegmentIndicators(false))
+}
 function updateShell(){const cam=state.data.camera||{},ros=state.data.ros||{};const p=$('#camera-pill');if(p)p.innerHTML=`${dot(cam.open?'success':'warning')} Camera ${cam.open?'Live':'Offline'}`;const r=$('#ros-pill');if(r)r.innerHTML=`${dot(ros.running?'success':'warning')} ROS2 ${ros.running?'Connected':'Offline'}`;const b=$('#board-pill');if(b)b.innerHTML=`${dot(cam.board_found?'success':'warning')} Board ${cam.board_found?'Detected':'—'}`;const rl=$('#runtime-label');if(rl){rl.textContent=state.backend==='ready'?'Python backend · ready':`Backend · ${state.backend}`;rl.previousElementSibling?.classList.toggle('success',state.backend==='ready')}const rs=$('#ros-sidebar');if(rs)rs.textContent=state.runtime?.rosSetup?`ROS · ${state.runtime.rosSetup.split('/').slice(-2,-1)[0]}`:'ROS environment · not detected'}
 let pendingPreview=null
 let previewRaf=0
@@ -260,5 +340,5 @@ function appendBackendLog(text){state.logs+=text||'';const log=$('#log-box');if(
 async function refreshState(){if(!api)return;try{state.data=await api.request('get_state');updateShell();renderPage(false)}catch(e){state.backend='error';updateShell()}}
 function handleEvent(msg){const {event,data}=msg;if(event==='state'){state.data=data;updateShell()}else if(event==='preview'){updatePreviewFrame(data)}else if(event==='pose'){updatePoseView(data)}else if(event==='log'){appendBackendLog(data.text||'')}else if(event==='error'){toast('Backend',data?.message||'Unknown error','danger')}else if(event==='tool_done'){if(data?.result)state.solveResult=data.result}}
 
-async function boot(){shell();applyTheme(state.theme);renderPage(false);if(!api){state.backend='unavailable';updateShell();toast('Electron bridge 未加载','请使用 npm start / Release 应用启动','warning');return}api.onEvent?.(handleEvent);api.onRuntime?.(m=>{state.backend=m.state||'unknown';state.runtime={...(state.runtime||{}),...m};updateShell();updateRuntimeView()});api.onRuntimeInstall?.(m=>{if(m.state==='starting')state.runtimeInstallState='running';if(m.state==='log')state.runtimeInstallLog+=(m.text||'');if(m.state==='done')state.runtimeInstallState='done';if(m.state==='error')state.runtimeInstallState='error';updateRuntimeView()});api.onStderr?.(t=>appendBackendLog('[backend] '+t));try{state.runtime=await api.runtimeInfo();const ping=await api.request('ping');state.backend=ping.pong?'ready':'error';state.data=await api.request('get_state')}catch(e){state.backend='error';toast('Backend 启动失败',e.message,'danger')}updateShell();renderPage(false)}
+async function boot(){shell();applyTheme(state.theme);renderPage(false);syncResponsiveShell();if(!responsiveListenerBound){responsiveListenerBound=true;window.addEventListener('resize',syncResponsiveShell,{passive:true})}if(!api){state.backend='unavailable';updateShell();toast('Electron bridge 未加载','请使用 npm start / Release 应用启动','warning');return}api.onEvent?.(handleEvent);api.onRuntime?.(m=>{state.backend=m.state||'unknown';state.runtime={...(state.runtime||{}),...m};updateShell();updateRuntimeView()});api.onRuntimeInstall?.(m=>{if(m.state==='starting')state.runtimeInstallState='running';if(m.state==='log')state.runtimeInstallLog+=(m.text||'');if(m.state==='done')state.runtimeInstallState='done';if(m.state==='error')state.runtimeInstallState='error';updateRuntimeView()});api.onStderr?.(t=>appendBackendLog('[backend] '+t));try{state.runtime=await api.runtimeInfo();const ping=await api.request('ping');state.backend=ping.pong?'ready':'error';state.data=await api.request('get_state')}catch(e){state.backend='error';toast('Backend 启动失败',e.message,'danger')}updateShell();renderPage(false)}
 boot()

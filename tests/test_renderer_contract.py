@@ -69,6 +69,34 @@ class RendererContractTests(unittest.TestCase):
         self.assertIn("will-change:transform", self.css.replace(" ", ""))
         self.assertIn("requestAnimationFrame", self.js)
 
+    def test_page_navigation_has_exit_and_slower_enter_motion(self) -> None:
+        self.assertIn("PAGE_EXIT_MS = 160", self.js)
+        self.assertIn("PAGE_ENTER_MS = 420", self.js)
+        self.assertIn("transitionToPage", self.js)
+        self.assertIn("oldPage.animate", self.js)
+
+    def test_segmented_controls_use_sliding_indicator_without_page_rebuild(self) -> None:
+        self.assertIn("segmented-indicator", self.js)
+        self.assertIn("syncSegmentIndicator", self.js)
+        self.assertIn(".segmented-indicator", self.css)
+        self.assertIn("transform .32s", self.css)
+        start = self.js.index("function bindSegment")
+        end = self.js.index("function bindPage", start)
+        segment_handler = self.js[start:end]
+        self.assertNotIn("renderPage()", segment_handler)
+
+    def test_layout_has_multi_stage_responsive_breakpoints(self) -> None:
+        compact = self.css.replace(" ", "")
+        for token in ("@media(max-width:1320px)", "@media(max-width:1080px)", "@media(max-width:900px)"):
+            self.assertIn(token, compact)
+        self.assertIn(".sidebar.compact", self.css)
+
+    def test_about_copy_describes_product理念_without_design_method_copy(self) -> None:
+        lowered = self.js.lower()
+        for forbidden in ("深色玻璃卡片", "amber accent", "自定义 titlebar", "sidebar workflow", "focused calibration workflow"):
+            self.assertNotIn(forbidden.lower(), lowered)
+        self.assertIn("专注标定流程", self.js)
+
     def test_renderer_is_local_only(self) -> None:
         combined = (self.js + self.html).lower()
         for forbidden in ("http://", "https://", "localhost", "websocket"):
