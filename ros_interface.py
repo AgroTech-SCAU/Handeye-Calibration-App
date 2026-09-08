@@ -73,7 +73,7 @@ class RosInterface:
             from std_msgs.msg import Bool, String
         except ImportError as exc:
             raise RuntimeError(
-                "未找到 ROS2 Python 环境。请先 source ROS2 setup，并用该环境的 Python 启动 APP。"
+                "未找到 ROS2 Python 环境；请先 source ROS2 setup，并用该环境的 Python 启动 APP"
             ) from exc
 
         if not rclpy.ok():
@@ -85,15 +85,21 @@ class RosInterface:
             timestamp = float(stamp.sec) + float(stamp.nanosec) * 1e-9
             position = message.pose.position
             orientation = message.pose.orientation
-            self._on_pose(RosPose(
-                values=(
-                    float(position.x), float(position.y), float(position.z),
-                    float(orientation.x), float(orientation.y),
-                    float(orientation.z), float(orientation.w),
-                ),
-                timestamp=timestamp or time.time(),
-                frame_id=message.header.frame_id,
-            ))
+            self._on_pose(
+                RosPose(
+                    values=(
+                        float(position.x),
+                        float(position.y),
+                        float(position.z),
+                        float(orientation.x),
+                        float(orientation.y),
+                        float(orientation.z),
+                        float(orientation.w),
+                    ),
+                    timestamp=timestamp or time.time(),
+                    frame_id=message.header.frame_id,
+                )
+            )
 
         def joints_callback(message) -> None:
             try:
@@ -101,7 +107,9 @@ class RosInterface:
                 available_values = tuple(float(value) for value in message.position)
                 if joint_names:
                     value_by_name = dict(zip(available_names, available_values))
-                    missing = [name for name in joint_names if name not in value_by_name]
+                    missing = [
+                        name for name in joint_names if name not in value_by_name
+                    ]
                     if missing:
                         raise ValueError(f"JointState 缺少关节: {', '.join(missing)}")
                     selected_names = joint_names
@@ -120,12 +128,14 @@ class RosInterface:
                     )
                 stamp = message.header.stamp
                 timestamp = float(stamp.sec) + float(stamp.nanosec) * 1e-9
-                self._on_joints(RosJoints(
-                    values=selected_values,
-                    names=selected_names,
-                    timestamp=timestamp or time.time(),
-                    frame_id=message.header.frame_id,
-                ))
+                self._on_joints(
+                    RosJoints(
+                        values=selected_values,
+                        names=selected_names,
+                        timestamp=timestamp or time.time(),
+                        frame_id=message.header.frame_id,
+                    )
+                )
             except Exception as exc:
                 text = str(exc)
                 self._on_error(text)
@@ -141,9 +151,11 @@ class RosInterface:
             node.destroy_node()
             raise ValueError(f"未知 ROS2 输入类型: {input_type}")
         if capture_topic:
+
             def capture_callback(message) -> None:
                 if bool(message.data):
                     self._on_capture()
+
             node.create_subscription(Bool, capture_topic, capture_callback, 10)
         if status_topic:
             self._publisher = node.create_publisher(String, status_topic, 10)
@@ -153,7 +165,9 @@ class RosInterface:
         self._node = node
         self._executor = executor
         self._running = True
-        self._thread = threading.Thread(target=executor.spin, daemon=True, name="ros2-spin")
+        self._thread = threading.Thread(
+            target=executor.spin, daemon=True, name="ros2-spin"
+        )
         self._thread.start()
         self.publish_status(
             "ros_started",

@@ -12,6 +12,7 @@ class RendererContractTests(unittest.TestCase):
         cls.js = (ROOT / "src" / "renderer" / "app.js").read_text(encoding="utf-8")
         cls.css = (ROOT / "src" / "renderer" / "styles.css").read_text(encoding="utf-8")
         cls.html = (ROOT / "src" / "renderer" / "index.html").read_text(encoding="utf-8")
+        cls.locales = (ROOT / "src" / "renderer" / "locales.js").read_text(encoding="utf-8")
 
     def test_desktop_shell_is_present(self) -> None:
         for token in (
@@ -95,7 +96,7 @@ class RendererContractTests(unittest.TestCase):
         lowered = self.js.lower()
         for forbidden in ("深色玻璃卡片", "amber accent", "自定义 titlebar", "sidebar workflow", "focused calibration workflow"):
             self.assertNotIn(forbidden.lower(), lowered)
-        self.assertIn("专注标定流程", self.js)
+        self.assertIn("专注标定流程", self.locales)
 
     def test_renderer_is_local_only(self) -> None:
         combined = (self.js + self.html).lower()

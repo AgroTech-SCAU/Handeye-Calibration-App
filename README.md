@@ -12,6 +12,7 @@ GUI 参考 [Kudu](https://github.com/AdventDevInc/kudu) 的桌面设计语言，
 
 - Electron Linux desktop app
 - Kudu-inspired GUI
+- 简体中文 / English 界面切换
 - Camera intrinsic calibration
 - Eye-in-hand sample collection
 - ROS2 `PoseStamped` and `JointState` input
@@ -107,6 +108,16 @@ ROS_SETUP=/opt/ros/humble/setup.bash ./launch.sh
 ```
 
 `launch.sh` 会优先使用 `ROS_SETUP`，其次使用已激活的 `ROS_DISTRO`，最后根据 Ubuntu 版本或 `/opt/ros` 中的安装进行检测
+
+## Language
+
+Settings 页面提供简体中文和 English 两种界面语言
+
+首次启动会根据系统语言自动选择，系统语言为 `zh-*` 时使用简体中文，其余语言使用 English
+
+用户手动选择后会保存偏好，后续启动继续使用上次选择的语言
+
+语言切换只刷新界面文案，不重启 Python backend，也不会断开当前 ROS2 与采样会话
 
 ## Calibration Workflow
 

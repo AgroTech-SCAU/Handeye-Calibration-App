@@ -2,7 +2,7 @@
 """
 手眼标定 Bundle Adjustment
 ==========================
-直接最小化像素重投影误差，联合优化手眼矩阵 X 和标定板基座位姿 Y。
+直接最小化像素重投影误差，联合优化手眼矩阵 X 和标定板基座位姿 Y
 
 核心思想:
   传统方法: 图像 → PnP(易受距离/噪声影响) → target_to_camera → 手眼求解
@@ -38,6 +38,7 @@ from calib_utils import make_chessboard_objp
 _SCIPY_OK = False
 try:
     from scipy.optimize import least_squares
+
     _SCIPY_OK = True
 except ImportError:
     pass
@@ -46,10 +47,13 @@ except ImportError:
 def load_intrinsics(path):
     """加载相机内参."""
     import yaml
+
     with open(path, encoding="utf-8") as f:
         cam = yaml.safe_load(f)
     mtx = np.array(cam["camera_matrix"]["data"], dtype=np.float64).reshape(3, 3)
-    dist = np.array(cam["distortion_coefficients"]["data"], dtype=np.float64).reshape(-1)
+    dist = np.array(cam["distortion_coefficients"]["data"], dtype=np.float64).reshape(
+        -1
+    )
     return mtx, dist
 
 
@@ -72,8 +76,9 @@ def project_points(mtx, dist, T_camera_target, obj_points):
     return projected.reshape(-1, 2)
 
 
-def ba_residual(params, A_list, obj_points, all_corners_px, mtx, dist,
-                sample_mask=None):
+def ba_residual(
+    params, A_list, obj_points, all_corners_px, mtx, dist, sample_mask=None
+):
     """Bundle Adjustment 残差函数.
 
     Args:
@@ -121,8 +126,14 @@ def ba_residual(params, A_list, obj_points, all_corners_px, mtx, dist,
     return np.concatenate(residuals)
 
 
-def run_bundle_adjustment(samples_path, X_init=None, intrinsics_path=None,
-                          max_samples=None, sample_indices=None, verbose=True):
+def run_bundle_adjustment(
+    samples_path,
+    X_init=None,
+    intrinsics_path=None,
+    max_samples=None,
+    sample_indices=None,
+    verbose=True,
+):
     """运行 Bundle Adjustment 精化手眼矩阵.
 
     Args:
@@ -168,17 +179,20 @@ def run_bundle_adjustment(samples_path, X_init=None, intrinsics_path=None,
     mtx, dist = load_intrinsics(intrinsics_path)
 
     # ── 准备角点数据 ──
-    A_list = [np.asarray(s["gripper_in_base"], dtype=np.float64)
-              for s in samples_raw]
+    A_list = [np.asarray(s["gripper_in_base"], dtype=np.float64) for s in samples_raw]
     all_corners = []
     sample_mask = []
 
-    allowed = (set(int(i) for i in sample_indices)
-               if sample_indices is not None else None)
+    allowed = (
+        set(int(i) for i in sample_indices) if sample_indices is not None else None
+    )
     for i, s in enumerate(samples_raw):
         corners_flat = s.get("corners_px")
-        if (corners_flat is not None and len(corners_flat) == cols * rows * 2
-                and (allowed is None or i in allowed)):
+        if (
+            corners_flat is not None
+            and len(corners_flat) == cols * rows * 2
+            and (allowed is None or i in allowed)
+        ):
             corners = np.array(corners_flat, dtype=np.float64).reshape(-1, 2)
             all_corners.append(corners)
             sample_mask.append(True)
@@ -213,10 +227,12 @@ def run_bundle_adjustment(samples_path, X_init=None, intrinsics_path=None,
     if X_init is None:
         # 用 OpenCV TSAI 初始化
         from solve import prepare_inputs_for_lists
+
         R_gb, t_gb, R_tc, t_tc = prepare_inputs_for_lists(b2g_list, t2c_list)
         try:
-            R_x, t_x = cv2.calibrateHandEye(R_gb, t_gb, R_tc, t_tc,
-                                            method=cv2.CALIB_HAND_EYE_TSAI)
+            R_x, t_x = cv2.calibrateHandEye(
+                R_gb, t_gb, R_tc, t_tc, method=cv2.CALIB_HAND_EYE_TSAI
+            )
             X_init = make_transform(R_x, t_x.reshape(3))
         except Exception:
             if verbose:
@@ -246,24 +262,36 @@ def run_bundle_adjustment(samples_path, X_init=None, intrinsics_path=None,
     # ── 初始残差 ──
     rvec_X, _ = cv2.Rodrigues(X_init[:3, :3])
     rvec_Y, _ = cv2.Rodrigues(Y_init[:3, :3])
-    params_init = np.concatenate([
-        rvec_X.ravel(), X_init[:3, 3],
-        rvec_Y.ravel(), Y_init[:3, 3],
-    ])
+    params_init = np.concatenate(
+        [
+            rvec_X.ravel(),
+            X_init[:3, 3],
+            rvec_Y.ravel(),
+            Y_init[:3, 3],
+        ]
+    )
 
-    res0 = ba_residual(params_init, A_list, obj_points, all_corners, mtx, dist,
-                       sample_mask)
-    rms0_px = float(np.sqrt(np.mean(res0 ** 2))) if len(res0) > 0 else float("inf")
+    res0 = ba_residual(
+        params_init, A_list, obj_points, all_corners, mtx, dist, sample_mask
+    )
+    rms0_px = float(np.sqrt(np.mean(res0**2))) if len(res0) > 0 else float("inf")
     if verbose:
         print(f"  🔍 初始重投影 RMS: {rms0_px:.4f} px")
 
     # 初始几何一致性 (用旧的 evaluate)
     from solve import evaluate
-    ev0 = evaluate(X_init, [b2g_list[i] for i in range(len(A_list)) if sample_mask[i]],
-                   [t2c_list[i] for i in range(len(A_list)) if sample_mask[i]], mode)
+
+    ev0 = evaluate(
+        X_init,
+        [b2g_list[i] for i in range(len(A_list)) if sample_mask[i]],
+        [t2c_list[i] for i in range(len(A_list)) if sample_mask[i]],
+        mode,
+    )
     if verbose:
-        print(f"  🔍 初始几何一致性: 平移RMS={ev0['trans_rms_mm']:.1f}mm  "
-              f"旋转RMS={ev0['rot_rms_deg']:.2f}°")
+        print(
+            f"  🔍 初始几何一致性: 平移RMS={ev0['trans_rms_mm']:.1f}mm  "
+            f"旋转RMS={ev0['rot_rms_deg']:.2f}°"
+        )
 
     # ── 优化 ──
     if verbose:
@@ -273,10 +301,10 @@ def run_bundle_adjustment(samples_path, X_init=None, intrinsics_path=None,
         ba_residual,
         params_init,
         args=(A_list, obj_points, all_corners, mtx, dist, sample_mask),
-        method='trf',
-        loss='soft_l1',
-        f_scale=2.0,          # ~2px 内用 L2, 外用 L1 (鲁棒)
-        x_scale='jac',
+        method="trf",
+        loss="soft_l1",
+        f_scale=2.0,  # ~2px 内用 L2, 外用 L1 (鲁棒)
+        x_scale="jac",
         ftol=1e-12,
         xtol=1e-12,
         gtol=1e-12,
@@ -298,18 +326,23 @@ def run_bundle_adjustment(samples_path, X_init=None, intrinsics_path=None,
     t_diff = np.linalg.norm(X_opt[:3, 3] - X_init[:3, 3]) * 1000.0
     if ang_diff > 45.0 or t_diff > 500.0:
         if verbose:
-            print(f"  ⚠ BA 偏离初值过大 (ΔR={ang_diff:.1f}°, Δt={t_diff:.0f}mm)，"
-                  f"回退到初值")
+            print(
+                f"  ⚠ BA 偏离初值过大 (ΔR={ang_diff:.1f}°, Δt={t_diff:.0f}mm)，"
+                f"回退到初值"
+            )
         return None
 
     # 2. 最终重投影误差
-    res_final = ba_residual(result.x, A_list, obj_points, all_corners, mtx, dist,
-                            sample_mask)
-    rms_final_px = float(np.sqrt(np.mean(res_final ** 2)))
+    res_final = ba_residual(
+        result.x, A_list, obj_points, all_corners, mtx, dist, sample_mask
+    )
+    rms_final_px = float(np.sqrt(np.mean(res_final**2)))
     if rms_final_px > max(rms0_px * 1.5, 1.0):
         if verbose:
-            print(f"  ⚠ BA 重投影误差增大 ({rms0_px:.4f} → {rms_final_px:.4f} px)，"
-                  f"回退到初值")
+            print(
+                f"  ⚠ BA 重投影误差增大 ({rms0_px:.4f} → {rms_final_px:.4f} px)，"
+                f"回退到初值"
+            )
         return None
 
     # 3. 几何一致性
@@ -320,19 +353,27 @@ def run_bundle_adjustment(samples_path, X_init=None, intrinsics_path=None,
     # 4. 检查 X 平移量级 (eye_in_hand 相机距末端一般 < 0.5m)
     if np.linalg.norm(X_opt[:3, 3]) > 0.60:
         if verbose:
-            print(f"  ❌ BA 优化后相机距末端 {np.linalg.norm(X_opt[:3,3]):.3f}m，"
-                  f"疑似退化解")
+            print(
+                f"  ❌ BA 优化后相机距末端 {np.linalg.norm(X_opt[:3,3]):.3f}m，"
+                f"疑似退化解"
+            )
         return None
 
     if verbose:
         print(f"  ✅ BA 完成")
-        print(f"     最终重投影 RMS: {rms_final_px:.4f} px "
-              f"({'✅' if rms_final_px < 0.3 else '⚠' if rms_final_px < 0.5 else '❌'})")
+        print(
+            f"     最终重投影 RMS: {rms_final_px:.4f} px "
+            f"({'✅' if rms_final_px < 0.3 else '⚠' if rms_final_px < 0.5 else '❌'})"
+        )
         print(f"     几何一致性:")
-        print(f"       平移 RMS: {ev_opt['trans_rms_mm']:.2f} mm "
-              f"({'✅' if ev_opt['trans_rms_mm'] < 5 else '⚠' if ev_opt['trans_rms_mm'] < 10 else '❌'})")
-        print(f"       旋转 RMS: {ev_opt['rot_rms_deg']:.2f}° "
-              f"({'✅' if ev_opt['rot_rms_deg'] < 1 else '⚠' if ev_opt['rot_rms_deg'] < 2 else '❌'})")
+        print(
+            f"       平移 RMS: {ev_opt['trans_rms_mm']:.2f} mm "
+            f"({'✅' if ev_opt['trans_rms_mm'] < 5 else '⚠' if ev_opt['trans_rms_mm'] < 10 else '❌'})"
+        )
+        print(
+            f"       旋转 RMS: {ev_opt['rot_rms_deg']:.2f}° "
+            f"({'✅' if ev_opt['rot_rms_deg'] < 1 else '⚠' if ev_opt['rot_rms_deg'] < 2 else '❌'})"
+        )
         print(f"     手眼矩阵 X (相机在末端中):")
         print(f"       t=[{X_opt[0,3]:.6f} {X_opt[1,3]:.6f} {X_opt[2,3]:.6f}] m")
         print(f"     标定板基座位姿 Y:")
@@ -353,7 +394,9 @@ def run_bundle_adjustment(samples_path, X_init=None, intrinsics_path=None,
 
 
 if __name__ == "__main__":
-    samples_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(_here, "samples.yaml")
+    samples_path = (
+        sys.argv[1] if len(sys.argv) > 1 else os.path.join(_here, "samples.yaml")
+    )
     result = run_bundle_adjustment(samples_path, verbose=True)
     if result:
         X, Y, metrics = result

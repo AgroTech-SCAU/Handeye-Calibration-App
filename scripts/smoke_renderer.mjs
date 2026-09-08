@@ -50,18 +50,21 @@ class CDP {
 function assembleRenderer() {
   let html = readFileSync(path.join(RENDERER, 'index.html'), 'utf8')
   const css = readFileSync(path.join(RENDERER, 'styles.css'), 'utf8')
+  let locales = readFileSync(path.join(RENDERER, 'locales.js'), 'utf8')
   let js = readFileSync(path.join(RENDERER, 'app.js'), 'utf8')
   html = html
     .replace(/\s*<meta http-equiv="Content-Security-Policy"[^>]+\/>/, '')
     .replace(/<link rel="stylesheet" href="styles\.css"\s*\/>/, `<style>${css}</style>`)
+    .replace(/<script src="locales\.js"><\/script>/, '')
     .replace(/<script src="app\.js"><\/script>/, '')
+  locales = locales.replaceAll('localStorage.', 'window.__handeyeLocalStorage.')
   js = js
     .replace(
       "const api = window.handeye || (location.search.includes('mock=1') ? createMockApi() : null)",
       'const api = createMockApi()'
     )
     .replaceAll('localStorage.', 'window.__handeyeLocalStorage.')
-  js = "window.__handeyeLocalStorage={getItem:()=>null,setItem:()=>{}};\n" + js
+  js = "window.__handeyeStore={'handeye-language':'en'};window.__handeyeLocalStorage={getItem:k=>window.__handeyeStore[k]??null,setItem:(k,v)=>{window.__handeyeStore[k]=String(v)}};\n" + locales + '\n' + js
   return { html, js }
 }
 
@@ -187,7 +190,7 @@ async function main() {
       await evalValue(cdp, `document.querySelector('#capture-intrinsic').click(); true`)
       for (let i = 0; i < 50; i++) {
         const text = await evalValue(cdp, `document.querySelector('.content').innerText`)
-        if (text.includes(`已采集 ${capture} 张`)) break
+        if (text.includes(`Images captured ${capture}`)) break
         await sleep(50)
         if (i === 49) throw new Error(`Intrinsic capture ${capture} did not update count`)
       }
@@ -209,7 +212,7 @@ async function main() {
     await evalValue(cdp, `document.querySelector('#capture-handeye').click(); true`)
     for (let i = 0; i < 50; i++) {
       const text = await evalValue(cdp, `document.querySelector('.content').innerText`)
-      if (text.includes('1 captured samples')) break
+      if (text.includes('Samples captured 1')) break
       await sleep(50)
       if (i === 49) throw new Error('Capture Sample action did not update count')
     }
@@ -231,6 +234,30 @@ async function main() {
     const settingsText = await evalValue(cdp, `document.querySelector('.content').innerText`)
     if (!settingsText.includes('Install Runtime') && !settingsText.includes('Repair Runtime')) {
       throw new Error('Settings runtime action missing')
+    }
+    const languageOptions = await evalValue(cdp, `Array.from(document.querySelectorAll('#language-selector button')).map(el=>el.textContent.trim())`)
+    if (languageOptions.length !== 2 || !languageOptions.includes('简体中文') || !languageOptions.includes('English')) {
+      throw new Error(`Language selector options mismatch: ${JSON.stringify(languageOptions)}`)
+    }
+    await evalValue(cdp, `document.querySelector('#language-selector [data-value="zh-CN"]').click(); true`)
+    await waitForPageTitle(cdp, '设置')
+    const zhState = await evalValue(cdp, `({lang:document.documentElement.lang,stored:window.__handeyeStore['handeye-language'],connect:document.querySelector('[data-page="connect"] > span:not(.step)')?.textContent,count:state.data.handeye.count})`)
+    if (zhState.lang !== 'zh-CN' || zhState.stored !== 'zh-CN' || zhState.connect !== '连接' || zhState.count !== 1) {
+      throw new Error(`Chinese language switch failed or state changed: ${JSON.stringify(zhState)}`)
+    }
+    await evalValue(cdp, `document.querySelector('[data-page="solve"]').click(); true`)
+    await waitForPageTitle(cdp, '求解与验证')
+    const zhSolveButtons = await evalValue(cdp, `Array.from(document.querySelectorAll('#run-diagnose,#run-solve,#run-verify')).map(el=>el.textContent.trim())`)
+    if (!zhSolveButtons.includes('诊断') || !zhSolveButtons.includes('求解') || !zhSolveButtons.includes('验证')) {
+      throw new Error(`Chinese workflow actions are not localized: ${JSON.stringify(zhSolveButtons)}`)
+    }
+    await evalValue(cdp, `document.querySelector('[data-page="settings"]').click(); true`)
+    await waitForPageTitle(cdp, '设置')
+    await evalValue(cdp, `document.querySelector('#language-selector [data-value="en"]').click(); true`)
+    await waitForPageTitle(cdp, 'Settings')
+    const enState = await evalValue(cdp, `({lang:document.documentElement.lang,stored:window.__handeyeStore['handeye-language'],connect:document.querySelector('[data-page="connect"] > span:not(.step)')?.textContent,count:state.data.handeye.count})`)
+    if (enState.lang !== 'en' || enState.stored !== 'en' || enState.connect !== 'Connect' || enState.count !== 1) {
+      throw new Error(`English language switch failed or state changed: ${JSON.stringify(enState)}`)
     }
     const themeIconGeometry = await evalValue(cdp, `(() => Array.from(document.querySelectorAll('#theme-segment .theme-option-icon')).map(el => { const r=el.getBoundingClientRect(); return {w:r.width,h:r.height,y:r.y+r.height/2} }))()`)
     if (themeIconGeometry.length !== 3) throw new Error('Theme selector icon count mismatch')

@@ -123,7 +123,15 @@ Settings 页面可以执行 Install Runtime
 
 该目录不需要 sudo
 
-## 8 Build Release
+## 8 Language
+
+Settings 页面可以在简体中文和 English 之间切换
+
+首次启动根据系统语言自动选择，后续使用用户最后一次选择的语言
+
+切换语言不会重启 backend，也不会清空当前 ROS2 连接和采样状态
+
+## 9 Build Release
 
 ```bash
 ./install.sh
