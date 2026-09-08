@@ -6,7 +6,7 @@ GUI 参考 [Kudu](https://github.com/AdventDevInc/kudu) 的桌面设计语言，
 
 标定核心以 [`AgroTech-SCAU/Handeye-Calibration-App`](https://github.com/AgroTech-SCAU/Handeye-Calibration-App) `main` 为基准，并通过 Git blob 校验保证冻结核心逐字节一致
 
-![HandEye dark UI](docs/images/handeye-desktop-dark.png)
+![HandEye dark UI](docs/images/handeye-desktop-white.png)
 
 ## Features
 
