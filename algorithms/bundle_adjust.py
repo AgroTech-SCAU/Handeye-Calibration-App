@@ -32,6 +32,11 @@ import cv2
 _here = os.path.dirname(os.path.abspath(__file__))
 if _here not in sys.path:
     sys.path.insert(0, _here)
+_root = os.path.dirname(_here)
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+from calibration_board import sample_object_points
+
 from fk_utils import make_transform, invert_transform, rotation_angle_deg
 from calib_utils import make_chessboard_objp
 
@@ -72,7 +77,7 @@ def project_points(mtx, dist, T_camera_target, obj_points):
     R = T_camera_target[:3, :3]
     t = T_camera_target[:3, 3].reshape(3, 1)
     rvec, _ = cv2.Rodrigues(R)
-    projected, _ = cv2.projectPoints(obj_points, rvec, t, mtx, dist)
+    projected, _ = cv2.projectPoints(np.asarray(obj_points, dtype=np.float64), rvec, t, mtx, dist)
     return projected.reshape(-1, 2)
 
 
@@ -115,7 +120,7 @@ def ba_residual(
         B_i = invert_transform(X) @ invert_transform(A_i) @ Y
 
         # 投影
-        predicted = project_points(mtx, dist, B_i, obj_points)
+        predicted = project_points(mtx, dist, B_i, obj_points[i] if isinstance(obj_points, list) else obj_points)
         observed = np.asarray(all_corners_px[i], dtype=np.float64).reshape(-1, 2)
 
         # 像素残差 (在 640x480 图像上 1px 是显著的)
@@ -168,15 +173,32 @@ def run_bundle_adjustment(
     samples_raw = data.get("samples", [])
     sq_mm = data.get("square_size_mm", 15)
     chessboard = data.get("chessboard", "11x8")
-    parts = chessboard.split("x")
-    cols, rows = int(parts[0]), int(parts[1])
-    sq_m = sq_mm / 1000.0
-    obj_points = make_chessboard_objp(cols, rows, sq_m)
+    obj_points = []
 
     # ── 加载内参 ──
-    if intrinsics_path is None:
-        intrinsics_path = os.path.join(_here, "camera_intrinsics.yaml")
-    mtx, dist = load_intrinsics(intrinsics_path)
+    bound_matrix = data.get("camera_matrix_at_collection")
+    bound_dist = data.get("distortion_at_collection")
+    if (bound_matrix is None) != (bound_dist is None):
+        raise ValueError("采集内参快照不完整")
+    if bound_matrix is not None:
+        from calibration_engine import intrinsic_binding
+        bound = dict(camera_matrix=bound_matrix, distortion_coefficients=bound_dist)
+        size = data.get("image_size_at_collection", [])
+        if len(size) != 2:
+            raise ValueError("缺少采集分辨率")
+        bound.update(image_width=size[0], image_height=size[1])
+        binding = intrinsic_binding(bound)
+        mtx = np.asarray(binding["camera_matrix"], np.float64).reshape(3,3)
+        dist = np.asarray(binding["distortion"], np.float64)
+        if intrinsics_path is not None:
+            external_mtx, external_dist = load_intrinsics(intrinsics_path)
+            if external_mtx.shape != mtx.shape or external_dist.shape != dist.shape or not np.array_equal(external_mtx, mtx) or not np.array_equal(external_dist, dist):
+                raise ValueError("BA 内参与采集内参快照不一致")
+    else:
+        if intrinsics_path is None:
+            name = data.get("intrinsics_file", "camera_intrinsics.yaml")
+            intrinsics_path = os.path.join(os.path.dirname(os.path.abspath(samples_path)), name)
+        mtx, dist = load_intrinsics(intrinsics_path)
 
     # ── 准备角点数据 ──
     A_list = [np.asarray(s["gripper_in_base"], dtype=np.float64) for s in samples_raw]
@@ -188,11 +210,12 @@ def run_bundle_adjustment(
     )
     for i, s in enumerate(samples_raw):
         corners_flat = s.get("corners_px")
-        if (
-            corners_flat is not None
-            and len(corners_flat) == cols * rows * 2
-            and (allowed is None or i in allowed)
-        ):
+        try:
+            points_i = sample_object_points(data, s)
+        except (KeyError, TypeError, ValueError):
+            points_i = None
+        obj_points.append(points_i)
+        if points_i is not None and (allowed is None or i in allowed):
             corners = np.array(corners_flat, dtype=np.float64).reshape(-1, 2)
             all_corners.append(corners)
             sample_mask.append(True)
@@ -220,7 +243,7 @@ def run_bundle_adjustment(
 
     if verbose:
         print(f"  📐 使用 {n_valid}/{len(samples_raw)} 个样本 (有角点数据)")
-        print(f"  📷 棋盘格: {cols}x{rows}, 方格={sq_mm}mm")
+        print(f"  📷 标定板: {data.get('board_type', 'chessboard')}, 方格={sq_mm}mm")
         print(f"  📷 内参: fx={mtx[0,0]:.1f}, fy={mtx[1,1]:.1f}")
 
     # ── 初始值 ──
@@ -274,7 +297,7 @@ def run_bundle_adjustment(
     res0 = ba_residual(
         params_init, A_list, obj_points, all_corners, mtx, dist, sample_mask
     )
-    rms0_px = float(np.sqrt(np.mean(res0**2))) if len(res0) > 0 else float("inf")
+    rms0_px = float(np.sqrt(2*np.mean(res0**2))) if len(res0) > 0 else float("inf")
     if verbose:
         print(f"  🔍 初始重投影 RMS: {rms0_px:.4f} px")
 
@@ -312,12 +335,21 @@ def run_bundle_adjustment(
         verbose=0,
     )
 
+    if not result.success or not np.isfinite(result.x).all():
+        raise ValueError("BA 优化未收敛或结果包含非有限数值")
+
     # ── 提取结果 ──
     R_X_opt = cv2.Rodrigues(result.x[:3])[0]
     X_opt = make_transform(R_X_opt, result.x[3:6])
 
     R_Y_opt = cv2.Rodrigues(result.x[6:9])[0]
     Y_opt = make_transform(R_Y_opt, result.x[9:12])
+
+    for i in range(len(A_list)):
+        if sample_mask[i]:
+            B = invert_transform(X_opt) @ invert_transform(A_list[i]) @ Y_opt
+            if np.min((obj_points[i]@B[:3,:3].T+B[:3,3])[:,2]) <= 0:
+                raise ValueError("BA 得到非正深度解")
 
     # ── 安全检查 ──
     # 1. 偏离初值过大
@@ -336,7 +368,7 @@ def run_bundle_adjustment(
     res_final = ba_residual(
         result.x, A_list, obj_points, all_corners, mtx, dist, sample_mask
     )
-    rms_final_px = float(np.sqrt(np.mean(res_final**2)))
+    rms_final_px = float(np.sqrt(2*np.mean(res_final**2)))
     if rms_final_px > max(rms0_px * 1.5, 1.0):
         if verbose:
             print(

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import base64
 import builtins
+from dataclasses import asdict
+from functools import wraps
 import itertools
 import json
 import math
@@ -26,9 +28,7 @@ if str(ROOT) not in sys.path:
 def _install_zip_strict_compat() -> None:
     """Backport zip(strict=True) for Ubuntu 20.04 / Python 3.8.
 
-    The frozen GitHub-main calibration core uses ``zip(..., strict=True)``.
-    Keeping the core byte-identical means compatibility belongs in this GUI
-    bridge rather than in ``calibration_engine.py``.
+    Preserve support for extensions using zip(strict=True) on Python 3.8
     """
     if sys.version_info < (3, 10):
         original_zip = builtins.zip
@@ -53,6 +53,8 @@ _install_zip_strict_compat()
 
 from algorithm_runner import joints_to_pose, run_algorithm
 from calibration_engine import CameraSession, HandEyeCollection, IntrinsicCalibration, detect_chessboard, rpy_to_quaternion
+from calibration_board import CalibrationBoard, positive_int
+from capture_sync import PoseHistory
 from config import AppConfig
 from ros_interface import RosInterface, RosJoints, RosPose
 
@@ -73,8 +75,18 @@ class JsonOut:
             self._stream.flush()
 
 
+def serialized(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self.session_lock:
+            return method(self, *args, **kwargs)
+    return call
+
+
 class Bridge:
     def __init__(self) -> None:
+        self.session_lock = threading.RLock()
+        self.ros_source = None
         self.out = JsonOut()
         self.mock = os.environ.get("HANDEYE_MOCK", "0") == "1"
         data_dir = Path(os.environ.get("HANDEYE_DATA_DIR", ROOT / ".runtime")).expanduser().resolve()
@@ -94,6 +106,9 @@ class Bridge:
         self.camera = CameraSession()
         self.camera_open = False
         self.current_frame: np.ndarray | None = None
+        self.frame_received_at = None
+        self.frame_lock = threading.Lock()
+        self.pose_history = PoseHistory()
         self.board_found = False
         self.board_corners = None
         self.frame_counter = 0
@@ -142,6 +157,7 @@ class Bridge:
                 "chessboard_cols": self.config.chessboard_cols,
                 "chessboard_rows": self.config.chessboard_rows,
                 "square_size_mm": self.config.square_size_mm,
+                **{key: value for key, value in asdict(self.config).items() if key.startswith("charuco_") or key == "board_type"},
                 "ros_input_type": self.config.ros_input_type,
                 "pose_topic": self.config.pose_topic,
                 "joint_dof": self.config.joint_dof,
@@ -152,6 +168,7 @@ class Bridge:
             "camera": {
                 "open": self.camera_open,
                 "board_found": bool(self.board_found),
+                        "corner_count": len(self.board_corners) if self.board_found else 0,
                 "width": int(self.current_frame.shape[1]) if self.current_frame is not None else self.config.camera_width,
                 "height": int(self.current_frame.shape[0]) if self.current_frame is not None else self.config.camera_height,
             },
@@ -181,6 +198,17 @@ class Bridge:
         width = max(640, int(self.config.camera_width))
         height = max(480, int(self.config.camera_height))
         canvas = np.full((height, width, 3), 32, np.uint8)
+        if self.config.board_type == "charuco":
+            board = CalibrationBoard(self.config.board_config())
+            bw = width-100
+            bh = int(bw*self.config.charuco_squares_y/self.config.charuco_squares_x)
+            if bh > height-100:
+                bh = height-100
+                bw = int(bh*self.config.charuco_squares_x/self.config.charuco_squares_y)
+            pattern = board.board.generateImage((bw,bh), marginSize=10)
+            ox,oy = (width-bw)//2,(height-bh)//2
+            canvas[oy:oy+bh,ox:ox+bw] = cv2.cvtColor(pattern,cv2.COLOR_GRAY2BGR)
+            return canvas
         cols, rows = self.config.chessboard_cols + 1, self.config.chessboard_rows + 1
         sq = max(20, min(width // (cols + 4), height // (rows + 4)))
         bw, bh = cols * sq, rows * sq
@@ -202,24 +230,23 @@ class Bridge:
                 else:
                     frame = self.camera.read()
             if frame is not None:
-                self.current_frame = frame
+                with self.frame_lock:
+                    self.current_frame = frame
+                    self.frame_received_at = time.monotonic()
                 self.frame_counter += 1
                 if self.frame_counter % 3 == 0:
                     try:
                         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                        self.board_found, self.board_corners = detect_chessboard(
-                            gray, (self.config.chessboard_cols, self.config.chessboard_rows)
-                        )
+                        preview_board = CalibrationBoard(self.config.board_config())
+                        detection = preview_board.detect(gray)
+                        self.board_found, self.board_corners = True, detection.image_points
+                        self.preview_board = preview_board
+                        self.preview_detection = detection
                     except Exception:
                         self.board_found, self.board_corners = False, None
                 display = frame.copy()
                 if self.board_found and self.board_corners is not None:
-                    cv2.drawChessboardCorners(
-                        display,
-                        (self.config.chessboard_cols, self.config.chessboard_rows),
-                        self.board_corners,
-                        True,
-                    )
+                    self.preview_board.draw(display, self.preview_detection)
                 # Keep preview responsive while limiting IPC bandwidth
                 h, w = display.shape[:2]
                 if w > 960:
@@ -232,6 +259,7 @@ class Bridge:
                         "seq": self.preview_seq,
                         "jpeg": base64.b64encode(encoded.tobytes()).decode("ascii"),
                         "board_found": bool(self.board_found),
+                        "corner_count": len(self.board_corners) if self.board_found else 0,
                         "width": int(frame.shape[1]),
                         "height": int(frame.shape[0]),
                     })
@@ -242,6 +270,11 @@ class Bridge:
             time.sleep(PREVIEW_INTERVAL_SEC)
 
     def _on_pose(self, pose: RosPose) -> None:
+        try:
+            self.pose_history.add(pose.values, time.monotonic(), pose.timestamp, pose.values, "ros_pose")
+        except ValueError as exc:
+            self._emit("error", {"message": str(exc)})
+            return
         self.latest_pose = pose
         self.latest_robot_input = pose.values
         self.latest_input_mode = "ros_pose"
@@ -253,6 +286,7 @@ class Bridge:
     def _on_joints(self, joints: RosJoints) -> None:
         try:
             pose_values = joints_to_pose(joints.values)
+            self.pose_history.add(pose_values, time.monotonic(), joints.timestamp, joints.values, "ros_joints")
             self.latest_pose = RosPose(pose_values, joints.timestamp, joints.frame_id)
             self.latest_robot_input = joints.values
             self.latest_input_mode = "ros_joints"
@@ -275,22 +309,47 @@ class Bridge:
         self.last_error = text
         self._emit("error", {"message": text})
 
+    @serialized
     def _apply_config(self, params: dict[str, Any]) -> dict[str, Any]:
-        fields = self.config.__dataclass_fields__
+        values = asdict(self.config)
+        integer_fields = {"camera_index", "camera_width", "camera_height", "chessboard_cols", "chessboard_rows", "joint_dof", "charuco_squares_x", "charuco_squares_y", "charuco_min_corners"}
         for key, value in params.items():
-            if key not in fields:
+            if key not in values:
                 continue
-            if key in {"camera_index", "camera_width", "camera_height", "chessboard_cols", "chessboard_rows", "joint_dof"}:
-                value = int(value)
-            elif key == "square_size_mm":
+            if key in integer_fields:
+                value = positive_int(value, key, 0 if key == "camera_index" else 1)
+            elif key in {"square_size_mm", "charuco_marker_size_mm"}:
+                if isinstance(value, bool):
+                    raise ValueError("尺寸必须是数值")
                 value = float(value)
+            elif key == "charuco_legacy_pattern":
+                if not isinstance(value, bool):
+                    raise ValueError("legacy_pattern 必须是布尔值")
             else:
                 value = str(value)
-            setattr(self.config, key, value)
-        Path(self.config.output_dir).expanduser().mkdir(parents=True, exist_ok=True)
-        self.config.save(self.config_path)
+            values[key] = value
+        candidate = AppConfig(**values)
+        CalibrationBoard(candidate.board_config())
+        changed = {key for key in values if values[key] != getattr(self.config, key)}
+        acquisition = {"output_dir", "camera_index", "camera_width", "camera_height", "chessboard_cols", "chessboard_rows", "square_size_mm", "board_type", "ros_input_type", "pose_topic", "joint_dof", "joint_names"} | {k for k in values if k.startswith("charuco_")}
+        if changed & acquisition and (self.intrinsic.image_sets or self.handeye.samples):
+            raise ValueError("采集会话中不能更换板参数、相机、位姿来源或输出目录，请先清空采集")
+        camera_fields = {"camera_index", "camera_width", "camera_height"}
+        if self.camera_open and changed & camera_fields:
+            raise ValueError("更换相机配置前请关闭相机")
+        if self.ros.running and changed & {"ros_input_type", "pose_topic", "joint_dof", "joint_names"}:
+            raise ValueError("更换位姿来源前请断开 ROS")
+        Path(candidate.output_dir).expanduser().mkdir(parents=True, exist_ok=True)
+        candidate.save(self.config_path)
+        self.config = candidate
+        if changed & acquisition:
+            self.board_found, self.board_corners = False, None
+            with self.frame_lock:
+                self.current_frame, self.frame_received_at = None, None
+            self.pose_history.clear()
         return self._state()
 
+    @serialized
     def open_camera(self, _params: dict[str, Any]) -> dict[str, Any]:
         if not self.mock:
             self.camera.open(self.config.camera_index, self.config.camera_width, self.config.camera_height)
@@ -298,6 +357,7 @@ class Bridge:
         self._emit_state()
         return self._state()["camera"]
 
+    @serialized
     def close_camera(self, _params: dict[str, Any]) -> dict[str, Any]:
         self.camera.close()
         self.camera_open = False
@@ -306,6 +366,7 @@ class Bridge:
         self._emit_state()
         return self._state()["camera"]
 
+    @serialized
     def capture_intrinsic(self, params: dict[str, Any]) -> dict[str, Any]:
         if self.current_frame is None:
             raise RuntimeError("请先打开相机并等待实时画面")
@@ -313,7 +374,7 @@ class Bridge:
         result = self.intrinsic.add(
             self.current_frame.copy(), self.config.chessboard_cols,
             self.config.chessboard_rows, self.config.square_size_mm,
-            quality_mode=mode,
+            quality_mode=mode, board=self.config.board_config(),
         )
         payload = {
             "count": len(self.intrinsic.image_sets),
@@ -324,22 +385,27 @@ class Bridge:
         self._emit_state()
         return payload
 
+    @serialized
     def clear_intrinsic(self, _params: dict[str, Any]) -> dict[str, Any]:
         self.intrinsic = IntrinsicCalibration()
         self._emit_state()
         return {"count": 0}
 
+    @serialized
     def solve_intrinsic(self, params: dict[str, Any]) -> dict[str, Any]:
+        if self.handeye.samples:
+            raise ValueError("已有外参样本，重新标定内参前请先清空外参样本")
         _, path, _ = self._paths()
         result = self.intrinsic.solve(
             path, self.config.chessboard_cols, self.config.chessboard_rows,
             self.config.square_size_mm,
-            quality_mode=str(params.get("quality_mode", "standard")),
+            quality_mode=str(params.get("quality_mode", "standard")), board=self.config.board_config(),
         )
         self._emit("intrinsic_solved", result)
         self._emit_state()
         return result
 
+    @serialized
     def start_ros(self, params: dict[str, Any]) -> dict[str, Any]:
         input_type = str(params.get("input_type", self.config.ros_input_type))
         input_topic = str(params.get("input_topic", self.config.pose_topic)).strip()
@@ -351,6 +417,12 @@ class Bridge:
             joint_names = tuple(x.strip() for x in names_raw.split(",") if x.strip())
         else:
             joint_names = tuple(str(x) for x in names_raw or [])
+        source = (input_type, input_topic, joint_dof if input_type == "joints" else None, joint_names if input_type == "joints" else ())
+        if self.handeye.samples and source != self.ros_source:
+            raise ValueError("已有外参样本，更换位姿来源前请先清空样本")
+        if self.ros.running and source != self.ros_source:
+            raise ValueError("更换位姿来源前请断开 ROS")
+        self.pose_history.clear()
         if self.mock:
             self.latest_pose = RosPose((0.412, -0.083, 0.536, 0.012, 0.713, 0.008, 0.701), time.time(), "arm_base_link")
             self.latest_robot_input = self.latest_pose.values
@@ -358,13 +430,16 @@ class Bridge:
             self._on_pose(self.latest_pose)
         else:
             self.ros.start(input_type, input_topic, capture_topic, status_topic, joint_dof, joint_names)
+        self.ros_source = source
         self._emit_state()
         return self._state()["ros"]
 
+    @serialized
     def stop_ros(self, _params: dict[str, Any]) -> dict[str, Any]:
         if not self.mock:
             self.ros.stop()
         self.latest_pose = None
+        self.pose_history.clear()
         self.latest_robot_input = None
         self._emit_state()
         return self._state()["ros"]
@@ -389,17 +464,24 @@ class Bridge:
             return joints_to_pose(joints), joints, "joints"
         raise ValueError(f"未知手动输入模式: {kind}")
 
+    @serialized
     def capture_handeye(self, params: dict[str, Any]) -> dict[str, Any]:
-        if self.current_frame is None:
+        with self.frame_lock:
+            frame = None if self.current_frame is None else self.current_frame.copy()
+            frame_time = self.frame_received_at
+        if frame is None:
             raise RuntimeError("请先打开相机并等待实时画面")
+        if frame_time is None or time.monotonic()-frame_time > .5:
+            raise ValueError("相机帧已过期")
         mode = str(params.get("mode", "auto"))
         if mode == "auto":
             if self.latest_pose is None:
                 raise RuntimeError("尚未收到 ROS2 机器人位姿")
-            pose = self.latest_pose.values
-            robot_input = self.latest_robot_input or pose
-            timestamp = self.latest_pose.timestamp
-            input_mode = self.latest_input_mode
+            entry, sync_dt = self.pose_history.match(frame_time, time.monotonic())
+            pose = entry["pose"]
+            robot_input = entry["robot_input"] or pose
+            timestamp = entry["robot_timestamp"]
+            input_mode = entry["input_mode"]
         else:
             pose, robot_input, input_mode = self._manual_pose(params)
             timestamp = time.time()
@@ -408,11 +490,13 @@ class Bridge:
             raise FileNotFoundError("请先完成内参标定，缺少 camera_intrinsics.yaml")
         quality = str(params.get("quality_mode", "standard"))
         result = self.handeye.add(
-            self.current_frame.copy(), pose, intrinsics,
+            frame, pose, intrinsics,
             self.config.chessboard_cols, self.config.chessboard_rows,
             self.config.square_size_mm, input_mode, timestamp,
-            robot_pose_input=robot_input, quality_mode=quality,
+            robot_pose_input=robot_input, quality_mode=quality, board=self.config.board_config(),
         )
+        if mode == "auto":
+            self.handeye.samples[-1].update(sync_frame_pose_dt_ms=sync_dt, sync_robot_stable=True, sync_time_basis="host_monotonic_receipt")
         payload = {
             "count": len(self.handeye.samples),
             "reprojection_error_px": result.reprojection_error_px,
@@ -425,21 +509,24 @@ class Bridge:
         self._emit_state()
         return payload
 
+    @serialized
     def clear_samples(self, _params: dict[str, Any]) -> dict[str, Any]:
         self.handeye = HandEyeCollection()
         self._emit_state()
         return {"count": 0}
 
+    @serialized
     def save_samples(self, _params: dict[str, Any]) -> dict[str, Any]:
         _, intrinsics, samples = self._paths()
         self.handeye.save(
             samples, intrinsics, self.config.chessboard_cols,
-            self.config.chessboard_rows, self.config.square_size_mm,
+            self.config.chessboard_rows, self.config.square_size_mm, board=self.config.board_config(),
         )
         self.ros.publish_status("samples_saved", path=str(samples), count=len(self.handeye.samples))
         self._emit_state()
         return {"path": str(samples), "count": len(self.handeye.samples)}
 
+    @serialized
     def run_tool(self, params: dict[str, Any]) -> dict[str, Any]:
         name = str(params.get("name", "solve"))
         mode = str(params.get("solve_mode", "robust"))
@@ -453,7 +540,7 @@ class Bridge:
         code = run_algorithm(name, samples, mode, emit)
         result_path = samples.with_name(f"{samples.stem}_result.yaml")
         payload = {"name": name, "exit_code": code, "ok": code == 0, "result_path": str(result_path), "log": "".join(chunks)}
-        if result_path.exists():
+        if name == "solve" and code == 0 and result_path.exists():
             try:
                 import yaml
                 payload["result"] = yaml.safe_load(result_path.read_text(encoding="utf-8"))

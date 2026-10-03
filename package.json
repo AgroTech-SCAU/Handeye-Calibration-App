@@ -1,6 +1,6 @@
 {
   "name": "handeye-calibration-app",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Electron GUI for the AgroTech-SCAU hand-eye calibration core",
   "main": "desktop/main.js",
   "author": "AgroTech-SCAU",
@@ -65,6 +65,14 @@
       {
         "from": "scripts/install-runtime.sh",
         "to": "handeye/scripts/install-runtime.sh"
+      },
+      {
+        "from": "calibration_board.py",
+        "to": "handeye/calibration_board.py"
+      },
+      {
+        "from": "capture_sync.py",
+        "to": "handeye/capture_sync.py"
       }
     ],
     "linux": {

@@ -37,7 +37,7 @@ const initialLanguage = i18n?.loadLanguage?.() || 'en'
 
 const state = {
   page:'connect', theme:localStorage.getItem('handeye-theme') || 'dark', language:initialLanguage, backend:'starting', runtime:null,
-  data:{ config:{output_dir:'',camera_index:0,camera_width:640,camera_height:480,chessboard_cols:11,chessboard_rows:8,square_size_mm:15,ros_input_type:'pose',pose_topic:'/arm/pose',joint_dof:5,joint_names:'',capture_topic:'',status_topic:'/handeye/status'}, camera:{open:false,board_found:false,width:640,height:480}, ros:{running:false,pose:null}, intrinsics:{count:0,exists:false}, handeye:{count:0,samples_exists:false}, output_dir:'' },
+  data:{ config:{output_dir:'',camera_index:0,camera_width:640,camera_height:480,chessboard_cols:11,chessboard_rows:8,square_size_mm:15,board_type:'chessboard',charuco_squares_x:14,charuco_squares_y:9,charuco_marker_size_mm:15,charuco_dictionary:'DICT_5X5_100',charuco_min_corners:6,charuco_legacy_pattern:false,ros_input_type:'pose',pose_topic:'/arm/pose',joint_dof:5,joint_names:'',capture_topic:'',status_topic:'/handeye/status'}, camera:{open:false,board_found:false,width:640,height:480}, ros:{running:false,pose:null}, intrinsics:{count:0,exists:false}, handeye:{count:0,samples_exists:false}, output_dir:'' },
   preview:'', logs:'', intrinsicQuality:'standard', handeyeQuality:'standard', sampleMode:'auto', manualType:'quaternion', angleUnit:'deg', solveMode:'robust',
   intrinsicResult:null, solveResult:null, runtimeInstallLog:'', runtimeInstallState:'idle'
 }
@@ -193,7 +193,12 @@ ${card(t('connect.robotInterface'),t('connect.robotInterfaceDesc'),'plug',`<div 
 <div class="callout">${icon('info')}<div><b>${t('connect.interfaceTitle')}</b><br>${t('connect.interfaceBody')}</div></div>
 </div></div></div>`}
 
-function boardFields(){const c=state.data.config;return `<div class="form-row three">${field(t('board.cols'),'board-cols',c.chessboard_cols,'number')}${field(t('board.rows'),'board-rows',c.chessboard_rows,'number')}${field(t('board.square'),'square-mm',c.square_size_mm,'number')}</div>`}
+function boardFields(){
+  const c=state.data.config;const isCharuco=c.board_type==='charuco'
+  return `<div class="form-row"><div class="field"><label for="board-type">${t('board.type')}</label><select class="control" id="board-type"><option value="chessboard" ${!isCharuco?'selected':''}>${t('board.chessboard')}</option><option value="charuco" ${isCharuco?'selected':''}>CharUco</option></select></div>${field(t('board.square'),'square-mm',c.square_size_mm,'number')}</div>
+  <div class="form-row" id="board-chess-fields" style="display:${isCharuco?'none':'grid'}">${field(t('board.cols'),'board-cols',c.chessboard_cols,'number')}${field(t('board.rows'),'board-rows',c.chessboard_rows,'number')}</div>
+  <div id="board-charuco-fields" style="display:${isCharuco?'block':'none'}"><div class="form-row three">${field(t('board.squaresX'),'charuco-x',c.charuco_squares_x??14,'number')}${field(t('board.squaresY'),'charuco-y',c.charuco_squares_y??9,'number')}${field(t('board.marker'),'charuco-marker',c.charuco_marker_size_mm??15,'number')}</div><div class="form-row">${field(t('board.dictionary'),'charuco-dictionary',c.charuco_dictionary??'DICT_5X5_100')}${field(t('board.minCorners'),'charuco-min',c.charuco_min_corners??6,'number')}</div><div class="field"><label><input id="charuco-legacy" type="checkbox" ${c.charuco_legacy_pattern?'checked':''}> ${t('board.patternCompat')}</label></div></div><div class="help">${t('board.sessionHelp')}</div>`
+}
 function segmentedControl(id,current,options,extraClass='amber'){
   return `<div class="segmented ${extraClass}" id="${id}"><span class="segmented-indicator" aria-hidden="true"></span>${options.map(([value,label])=>`<button data-value="${value}" class="${current===value?'active':''}">${label}</button>`).join('')}</div>`
 }
@@ -254,7 +259,10 @@ function configFromForm(scope='connect'){
   if(scope==='connect'){
     c.output_dir=$('#output-dir')?.value??c.output_dir;c.camera_index=Number($('#camera-index')?.value??c.camera_index);c.camera_width=Number($('#camera-width')?.value??c.camera_width);c.camera_height=Number($('#camera-height')?.value??c.camera_height);c.ros_input_type=$('#ros-input-type')?.value??c.ros_input_type;c.pose_topic=$('#pose-topic')?.value??c.pose_topic;c.joint_dof=Number($('#joint-dof')?.value??c.joint_dof);c.joint_names=$('#joint-names')?.value??c.joint_names;c.capture_topic=$('#capture-topic')?.value??c.capture_topic;c.status_topic=$('#status-topic')?.value??c.status_topic
   }
-  if(scope==='board'){c.chessboard_cols=Number($('#board-cols')?.value??c.chessboard_cols);c.chessboard_rows=Number($('#board-rows')?.value??c.chessboard_rows);c.square_size_mm=Number($('#square-mm')?.value??c.square_size_mm)}
+  if(scope==='board'){
+    c.board_type=$('#board-type')?.value??c.board_type;c.chessboard_cols=Number($('#board-cols')?.value??c.chessboard_cols);c.chessboard_rows=Number($('#board-rows')?.value??c.chessboard_rows);c.square_size_mm=Number($('#square-mm')?.value??c.square_size_mm)
+    c.charuco_squares_x=Number($('#charuco-x')?.value??c.charuco_squares_x);c.charuco_squares_y=Number($('#charuco-y')?.value??c.charuco_squares_y);c.charuco_marker_size_mm=Number($('#charuco-marker')?.value??c.charuco_marker_size_mm);c.charuco_dictionary=$('#charuco-dictionary')?.value??c.charuco_dictionary;c.charuco_min_corners=Number($('#charuco-min')?.value??c.charuco_min_corners);c.charuco_legacy_pattern=$('#charuco-legacy')?.checked??c.charuco_legacy_pattern
+  }
   return c
 }
 async function request(method,params={},okMessage=''){
@@ -310,6 +318,12 @@ function bindSegment(id,key,onChange){
   })
 }
 function bindPage(){
+  $('#board-type')?.addEventListener('change',e=>{
+    const charuco=e.target.value==='charuco'
+    $('#board-chess-fields').style.display=charuco?'none':'grid'
+    $('#board-charuco-fields').style.display=charuco?'block':'none'
+    if(charuco&&Number($('#square-mm').value)<=Number($('#charuco-marker').value))$('#square-mm').value=20
+  })
   bindSegment('intrinsic-quality','intrinsicQuality',updateIntrinsicQualityView);bindSegment('handeye-quality','handeyeQuality');bindSegment('sample-mode','sampleMode',updateSampleModeView);bindSegment('solve-mode','solveMode')
   $('#browse-output')?.addEventListener('click',async()=>{const p=await api?.selectDirectory($('#output-dir').value);if(p)$('#output-dir').value=p})
   $('#save-connect')?.addEventListener('click',()=>saveConfig('connect'))
@@ -326,7 +340,7 @@ function bindPage(){
   $('#capture-handeye')?.addEventListener('click',async()=>{const params={mode:state.sampleMode,quality_mode:state.handeyeQuality};if(state.sampleMode==='manual'){params.manual_type=state.manualType;params.angle_unit=state.angleUnit;params.values=$$('[id^="manual-"]').map(e=>Number(e.value))}const r=await request('capture_handeye',params,t('toast.handeyeCaptured'));toast(t('toast.sampleQuality'),`Reproj ${n(r.reprojection_error_px,3)} px · ${n(r.pixels_per_square,1)} px/square`,'success');await refreshState()})
   $('#save-samples')?.addEventListener('click',async()=>{const r=await request('save_samples',{},t('toast.samplesSaved'));toast(t('toast.saveComplete'),r.path,'success');await refreshState()})
   $('#clear-samples')?.addEventListener('click',async()=>{await request('clear_samples',{},t('toast.samplesCleared'));await refreshState()})
-  for(const [id,name,labelKey] of [['run-diagnose','diagnose','action.diagnose'],['run-solve','solve','action.solve'],['run-verify','verify','action.verify']]) $('#'+id)?.addEventListener('click',async()=>{const b=$('#'+id);b.disabled=true;try{const r=await request('run_tool',{name,solve_mode:state.solveMode},t('toast.toolComplete',{name:t(labelKey)}));if(r.log&&!state.logs.includes(r.log))state.logs+=r.log;if(r.result)state.solveResult=r.result;renderPage();setTimeout(()=>{$('#log-box')?.scrollTo(0,999999)},0)}finally{if($('#'+id))$('#'+id).disabled=false}})
+  for(const [id,name,labelKey] of [['run-diagnose','diagnose','action.diagnose'],['run-solve','solve','action.solve'],['run-verify','verify','action.verify']]) $('#'+id)?.addEventListener('click',async()=>{const b=$('#'+id);b.disabled=true;if(name==='solve'){state.solveResult=null;renderPage();$('#'+id).disabled=true}try{const r=await request('run_tool',{name,solve_mode:state.solveMode},t('toast.toolComplete',{name:t(labelKey)}));if(r.log&&!state.logs.includes(r.log))state.logs+=r.log;if(name==='solve')state.solveResult=r.ok?r.result||null:null;if(!r.ok)toast(t('toast.operationFailed'),t('solve.failed'),'danger');renderPage();setTimeout(()=>{$('#log-box')?.scrollTo(0,999999)},0)}catch(e){if(name==='solve'){state.solveResult=null;renderPage()}appendBackendLog(String(e.message||e)+'\n')}finally{if($('#'+id))$('#'+id).disabled=false}})
   $('#install-runtime')?.addEventListener('click',async()=>{if(!api?.runtimeInstall)return;state.runtimeInstallState='running';state.runtimeInstallLog='';renderPage();try{await api.runtimeInstall();state.runtimeInstallState='done';state.runtime=await api.runtimeInfo();toast(t('toast.runtimeInstalled'),t('toast.backendRestarted'),'success')}catch(e){state.runtimeInstallState='error';toast(t('toast.runtimeFailed'),e.message||String(e),'danger')}renderPage()})
   $('#restart-backend')?.addEventListener('click',async()=>{if(!api?.backendRestart)return;await api.backendRestart();toast(t('toast.backendRestarting'),'','success')})
   const theme=$('#theme-segment');if(theme)$$('button',theme).forEach(b=>b.onclick=()=>applyTheme(b.dataset.theme))
@@ -370,7 +384,7 @@ function updatePreviewFrame(data){
     const size=$('#preview-size')
     if(size)size.textContent=`${frame.width||640} × ${frame.height||480}`
     const board=$('#board-live')
-    if(board){board.textContent=frame.board_found?t('status.detected'):t('status.notDetected');board.style.color=frame.board_found?'var(--success)':'var(--warning)'}
+    if(board){board.textContent=frame.board_found?t('board.detectedCount',{count:frame.corner_count||0}):t('status.notDetected');board.style.color=frame.board_found?'var(--success)':'var(--warning)'}
   })
 }
 
@@ -382,7 +396,7 @@ Python : ${rt.python||t('common.unknown')}
 App    : ${rt.appVersion||'dev'}`;const log=$('#runtime-install-log');if(log){log.textContent=state.runtimeInstallLog.slice(-5000);log.classList.toggle('hidden',!state.runtimeInstallLog)}const install=$('#install-runtime');if(install)install.disabled=state.runtimeInstallState==='running';const installLabel=$('#install-runtime-label');if(installLabel)installLabel.textContent=state.runtimeInstallState==='running'?t('runtime.installing'):installed?t('runtime.repair'):t('runtime.install')}
 function appendBackendLog(text){state.logs+=text||'';const log=$('#log-box');if(log){log.textContent=state.logs;log.scrollTop=log.scrollHeight}}
 async function refreshState(){if(!api)return;try{state.data=await api.request('get_state');updateShell();renderPage(false)}catch(e){state.backend='error';updateShell()}}
-function handleEvent(msg){const {event,data}=msg;if(event==='state'){state.data=data;updateShell()}else if(event==='preview'){updatePreviewFrame(data)}else if(event==='pose'){updatePoseView(data)}else if(event==='log'){appendBackendLog(data.text||'')}else if(event==='error'){toast('Backend',data?.message||t('error.unknown'),'danger')}else if(event==='tool_done'){if(data?.result)state.solveResult=data.result}}
+function handleEvent(msg){const {event,data}=msg;if(event==='state'){state.data=data;updateShell()}else if(event==='preview'){updatePreviewFrame(data)}else if(event==='pose'){updatePoseView(data)}else if(event==='log'){appendBackendLog(data.text||'')}else if(event==='error'){toast('Backend',data?.message||t('error.unknown'),'danger')}else if(event==='tool_done'){if(data?.name==='solve')state.solveResult=data.ok?data.result||null:null}}
 
 async function boot(){document.documentElement.lang=state.language;shell();applyTheme(state.theme);renderPage(false);syncResponsiveShell();if(!responsiveListenerBound){responsiveListenerBound=true;window.addEventListener('resize',syncResponsiveShell,{passive:true})}if(!api){state.backend='unavailable';updateShell();toast(t('toast.bridgeMissing'),t('toast.startApp'),'warning');return}api.onEvent?.(handleEvent);api.onRuntime?.(m=>{state.backend=m.state||'unknown';state.runtime={...(state.runtime||{}),...m};updateShell();updateRuntimeView()});api.onRuntimeInstall?.(m=>{if(m.state==='starting')state.runtimeInstallState='running';if(m.state==='log')state.runtimeInstallLog+=(m.text||'');if(m.state==='done')state.runtimeInstallState='done';if(m.state==='error')state.runtimeInstallState='error';updateRuntimeView()});api.onStderr?.(t=>appendBackendLog('[backend] '+t));try{state.runtime=await api.runtimeInfo();const ping=await api.request('ping');state.backend=ping.pong?'ready':'error';state.data=await api.request('get_state')}catch(e){state.backend='error';toast(t('toast.backendStartFailed'),e.message,'danger')}updateShell();renderPage(false)}
 boot()

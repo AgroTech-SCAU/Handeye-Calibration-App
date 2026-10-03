@@ -1,0 +1,31 @@
+name: Calibration regression
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  calibration:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: '3.8'
+            opencv: 'opencv-python-headless==4.8.1.78'
+            numpy: 'numpy<2'
+          - python: '3.12'
+            opencv: 'opencv-python-headless>=4.8,<5'
+            numpy: 'numpy>=1.24'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install calibration dependencies
+        run: python -m pip install '${{ matrix.opencv }}' '${{ matrix.numpy }}' 'scipy>=1.10' 'PyYAML>=6.0'
+      - name: Run regression, lifecycle, static and integrity checks
+        run: npm test

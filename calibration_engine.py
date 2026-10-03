@@ -10,6 +10,8 @@ import cv2
 import numpy as np
 import yaml
 
+from calibration_board import CalibrationBoard, reprojection_rms, solve_board_pose
+
 
 def object_points(cols: int, rows: int, square_size_mm: float) -> np.ndarray:
     points = np.zeros((cols * rows, 3), np.float32)
@@ -88,6 +90,21 @@ def load_intrinsics(path: Path):
     return camera_matrix, distortion, data
 
 
+def board_config(cols, rows, square_mm, config=None):
+    return CalibrationBoard(config or dict(type="chessboard", cols=cols, rows=rows, square_size_mm=square_mm))
+
+
+def intrinsic_binding(data):
+    matrix = np.asarray(data["camera_matrix"]["data"], np.float64).reshape(3, 3)
+    distortion = np.asarray(data["distortion_coefficients"]["data"], np.float64).reshape(-1)
+    width, height = data.get("image_width"), data.get("image_height")
+    if not np.isfinite(matrix).all() or not np.isfinite(distortion).all() or matrix[0,0] <= 0 or matrix[1,1] <= 0 or not np.allclose(matrix[2], [0,0,1]):
+        raise ValueError("无效相机内参")
+    if distortion.size not in (4,5,8,12,14) or not isinstance(width, int) or not isinstance(height, int) or width <= 0 or height <= 0:
+        raise ValueError("内参必须包含有效畸变系数及图像分辨率")
+    return dict(camera_matrix=matrix.ravel().tolist(), distortion=distortion.tolist(), image_size=[width,height], created_at=data.get("created_at"))
+
+
 class CameraSession:
     def __init__(self):
         self.capture: cv2.VideoCapture | None = None
@@ -129,17 +146,23 @@ class IntrinsicCalibration:
         self.image_sets: list[np.ndarray] = []
         self.image_size: tuple[int, int] | None = None
         self.quality_mode: str | None = None
+        self.board_spec = None
+        self.binding = None
 
     def add(
         self, frame: np.ndarray, cols: int, rows: int, square_mm: float,
         quality_mode: str = "standard",
+        board: dict | None = None,
     ) -> IntrinsicCaptureResult:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         if self.quality_mode is not None and quality_mode != self.quality_mode:
             raise ValueError("采集中不能切换质量模式；请先清空内参图片")
-        found, corners = detect_chessboard(gray, (cols, rows))
-        if not found:
-            raise ValueError("当前画面未检测到完整棋盘格")
+        detector = board_config(cols, rows, square_mm, board)
+        size = (gray.shape[1], gray.shape[0])
+        if self.board_spec is not None and (detector.config != self.board_spec or size != self.image_size):
+            raise ValueError("采集中不能切换标定板或图像分辨率，请先清空图片")
+        detection = detector.detect(gray)
+        corners = detection.image_points
         sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
         _, _, board_width, board_height = cv2.boundingRect(corners)
         coverage = float(
@@ -160,7 +183,8 @@ class IntrinsicCalibration:
                 raise ValueError(f"{label}拒绝本次图片：" + "；".join(problems))
         elif quality_mode != "minimal":
             raise ValueError(f"未知内参采样质量模式：{quality_mode}")
-        self.object_sets.append(object_points(cols, rows, square_mm))
+        self.object_sets.append(detection.object_points.copy())
+        self.board_spec = dict(detector.config)
         self.image_sets.append(corners)
         self.image_size = (gray.shape[1], gray.shape[0])
         self.quality_mode = quality_mode
@@ -169,7 +193,10 @@ class IntrinsicCalibration:
     def solve(
         self, output: Path, cols: int, rows: int, square_mm: float,
         quality_mode: str = "standard",
+        board: dict | None = None,
     ) -> dict:
+        if self.board_spec is not None and board_config(cols, rows, square_mm, board).config != self.board_spec:
+            raise ValueError("求解配置与采集标定板不一致")
         minimums = {"minimal": 3, "standard": 10, "strict": 15}
         if quality_mode not in minimums:
             raise ValueError(f"未知内参求解模式：{quality_mode}")
@@ -191,10 +218,10 @@ class IntrinsicCalibration:
         )
         per_image = []
         for obj, img, rvec, tvec in zip(
-            self.object_sets, self.image_sets, rvecs, tvecs, strict=True,
+            self.object_sets, self.image_sets, rvecs, tvecs,
         ):
             projected, _ = cv2.projectPoints(obj, rvec, tvec, matrix, distortion)
-            per_image.append(float(cv2.norm(img, projected, cv2.NORM_L2) / len(obj)))
+            per_image.append(reprojection_rms(img, projected))
         payload = {
             "camera_matrix": {"rows": 3, "cols": 3, "data": matrix.reshape(-1).tolist()},
             "distortion_coefficients": {
@@ -204,8 +231,8 @@ class IntrinsicCalibration:
             },
             "image_width": self.image_size[0],
             "image_height": self.image_size[1],
-            "chessboard": f"{cols}x{rows}",
-            "square_size_mm": float(square_mm),
+            **CalibrationBoard(self.board_spec).metadata(),
+            "reprojection_error_definition": "point_rms_2d",
             "reprojection_error_px": float(rms),
             "reprojection_error_median_px": float(np.median(per_image)),
             "reprojection_error_max_px": float(max(per_image)),
@@ -233,6 +260,8 @@ class HandEyeCollection:
     def __init__(self):
         self.samples: list[dict] = []
         self.quality_mode: str | None = None
+        self.board_spec = None
+        self.binding = None
 
     def add(
         self,
@@ -246,30 +275,32 @@ class HandEyeCollection:
         pose_timestamp: float | None = None,
         robot_pose_input: Sequence[float] | None = None,
         quality_mode: str = "standard",
+        board: dict | None = None,
     ) -> SampleResult:
         if len(pose) != 7:
             raise ValueError("位姿必须是 x y z qx qy qz qw")
         if self.quality_mode is not None and quality_mode != self.quality_mode:
             raise ValueError("采集中不能切换质量模式；请先清空外参样本")
-        matrix, distortion, _ = load_intrinsics(intrinsics_path)
+        matrix, distortion, intrinsics = load_intrinsics(intrinsics_path)
+        binding = intrinsic_binding(intrinsics)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        found, corners = detect_chessboard(gray, (cols, rows))
-        if not found or corners is None:
-            raise ValueError("当前画面未检测到完整棋盘格")
-        obj = object_points(cols, rows, square_mm)
-        ok, rvec, tvec = cv2.solvePnP(obj, corners, matrix, distortion)
-        if not ok:
-            raise ValueError("PnP 求解失败")
-        projected, _ = cv2.projectPoints(obj, rvec, tvec, matrix, distortion)
-        error = float(cv2.norm(corners, projected, cv2.NORM_L2) / len(obj))
-        rotation, _ = cv2.Rodrigues(rvec)
-        target_to_camera = make_transform(rotation, tvec.reshape(3))
+        detector = board_config(cols, rows, square_mm, board)
+        if [gray.shape[1], gray.shape[0]] != binding["image_size"]:
+            raise ValueError("采集图像分辨率与相机内参不一致")
+        if self.board_spec is not None and (self.board_spec != detector.config or self.binding != binding):
+            raise ValueError("采集中不能更换标定板或内参，请先清空样本")
+        if not np.isfinite(np.asarray(pose, np.float64)).all():
+            raise ValueError("机器人位姿包含非有限数值")
+        detection = detector.detect(gray, matrix, distortion)
+        corners, obj = detection.image_points, detection.object_points
+        target_to_camera, error = solve_board_pose(obj, corners, matrix, distortion)
+        tvec = target_to_camera[:3,3].reshape(3,1)
         x, y, z, qx, qy, qz, qw = (float(value) for value in pose)
         gripper_in_base = make_transform(quaternion_to_matrix(qx, qy, qz, qw), (x, y, z))
         sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
         distance_mm = float(tvec[2, 0] * 1000.0)
         pixels_per_square = (
-            float(matrix[0, 0] * square_mm / distance_mm)
+            float(matrix[0, 0] * detector.config["square_size_mm"] / distance_mm)
             if distance_mm > 0 else 0.0
         )
         thresholds = {
@@ -307,6 +338,11 @@ class HandEyeCollection:
         }
         if pose_timestamp is not None:
             sample["pose_timestamp"] = float(pose_timestamp)
+        if detection.ids is not None:
+            sample["charuco_ids"] = detection.ids.tolist()
+        self.board_spec = dict(detector.config)
+        self.binding = binding
+        self.intrinsics_snapshot = intrinsics
         self.samples.append(sample)
         self.quality_mode = quality_mode
         return SampleResult(error, distance_mm, sharpness, pixels_per_square)
@@ -318,16 +354,21 @@ class HandEyeCollection:
         cols: int,
         rows: int,
         square_mm: float,
+        board: dict | None = None,
     ) -> None:
         if not self.samples:
             raise ValueError("还没有外参样本")
-        _, _, intrinsics = load_intrinsics(intrinsics_path)
+        _, _, current = load_intrinsics(intrinsics_path)
+        if intrinsic_binding(current) != self.binding or board_config(cols, rows, square_mm, board).config != self.board_spec:
+            raise ValueError("保存配置与采集条件不一致，请恢复采集内参和标定板")
+        intrinsics = self.intrinsics_snapshot
         payload = {
+            "schema_version": 2,
+            "reprojection_error_definition": "point_rms_2d",
             "handeye_mode": "eye_in_hand",
             "sample_count": len(self.samples),
             "created_at": datetime.now().isoformat(timespec="seconds"),
-            "chessboard": f"{cols}x{rows}",
-            "square_size_mm": float(square_mm),
+            **CalibrationBoard(self.board_spec).metadata(),
             "collection_quality_mode": self.quality_mode,
             "intrinsics_file": intrinsics_path.name,
             "intrinsics_created_at": intrinsics.get("created_at"),

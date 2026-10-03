@@ -1332,6 +1332,8 @@ def solve(samples_path, simple=False, use_ba=False):
                 sample_indices=inlier_indices,
                 verbose=True,
             )
+            if ba_result is None:
+                raise RuntimeError("BA 未产生有效结果")
             if ba_result is not None:
                 X_ba, Y_ba, ba_metrics = ba_result
                 ba_t_rms = float(ba_metrics["translation_rms_mm"])
@@ -1357,10 +1359,8 @@ def solve(samples_path, simple=False, use_ba=False):
                     f"  🧭 四元数 xyzw: [{q[0]:.6f}, {q[1]:.6f}, {q[2]:.6f}, {q[3]:.6f}]"
                 )
                 print(f"  📏 RPY: Roll={r:.6f}  Pitch={p:.6f}  Yaw={y:.6f} rad")
-        except ImportError:
-            print(f"  ⚠ bundle_adjust 模块加载失败，跳过 BA 精化")
         except Exception as e:
-            print(f"  ⚠ BA 精化失败: {e}")
+            raise RuntimeError(f"BA 精化失败，本次未更新结果: {e}") from e
 
     # ── 保存结果 ──
     result_path = os.path.splitext(samples_path)[0] + "_result.yaml"

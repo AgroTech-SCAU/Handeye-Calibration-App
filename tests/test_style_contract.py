@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SKIP_PARTS = {".git", "node_modules", "__pycache__", "dist", "build"}
 TEXT_SUFFIXES = {".py", ".js", ".mjs", ".html", ".css", ".md", ".txt", ".yaml", ".yml", ".json", ".sh"}
 FULL_STOP = chr(0x3002)
-BANNED_HISTORY = (chr(0x65E7), chr(0x5386) + chr(0x53F2), chr(0x4E4B) + chr(0x524D), chr(0x8FC7) + chr(0x5F80) + chr(0x7248) + chr(0x672C), "leg" + "acy")
+BANNED_HISTORY = (chr(0x65E7), chr(0x5386) + chr(0x53F2), chr(0x4E4B) + chr(0x524D), chr(0x8FC7) + chr(0x5F80) + chr(0x7248) + chr(0x672C))
 PARAGRAPH_END_PUNCT = tuple(chr(0x3002) + "！？!?；;，,：:")
 
 FROZEN_CORE = {

@@ -1,59 +1,30 @@
-# 项目规划
+# CharUco integration and calibration correctness
 
-> 本文件记录仓库内部的详细技术规划；飞书只维护当前大版本、Next、缺人和主要阻塞摘要
+Base: Handeye-Calibration-App 4bc7dc70af8a5e3ecee49502562bd1dfac0af4a1.
+Algorithm reference: yjjy25/vison_sys 3c7d790205685029af3fba74c3876d71b91b1a40.
 
-## 当前状态
+## Approved scope
+Preserve chessboard and Electron/Python architecture. Add configurable CharUco detection,
+ID-bound object/image points, partial-view intrinsic and hand-eye sampling and variable-point BA.
+Use metres internally and per-corner 2D RMS in pixels. Reject invalid/ambiguous PnP poses.
+Lock board, image dimensions and intrinsics within each collection; save immutable snapshots.
+Automatic ROS capture must reject stale frames/poses, excessive receipt-time difference and
+motion; receipt times are not hardware exposure timestamps. Manual capture requires a stopped robot.
+Keep legacy chessboard YAML readable. Record intentional core edits with a local release baseline.
 
-- **当前稳定版本：** 暂无
-- **当前开发版本：** `v0.x`
-- **当前目标：** 用一句话说明当前阶段最需要完成什么
+## Implementation plan
+- [x] Regression tests: partial/rotated detection, ID validation, PnP depth, RMS, session locking,
+  resolution mismatch, variable-point BA recovering known transforms, real bridge CharUco roundtrip.
+- [x] Shared calibration_board.py provides BoardSpec, immutable Detection, sample_object_points,
+  reprojection_rms and solve_board_pose. Engine consumes these without changing hand-eye equations.
+- [x] BA and quality gate reconstruct each frame's points; BA uses bound collection intrinsics.
+  Explicit BA failure must be returned to GUI; never report a fallback as successful BA.
+- [x] Bridge validates configuration transactionally, locks acquisition settings, tracks frame and
+  pose receipt time, checks stability, and previews IDs. Renderer exposes bilingual board controls.
+- [x] Update README, USER_GUIDE, resource packaging, integrity manifest, CI and migration notes.
+- [x] Run full Python suite, npm lifecycle/static/core checks, renderer smoke when available;
+  independent code review; package source ZIP excluding dependencies and temporary data.
 
-## 已完成
-
-- [ ] 已完成能力 / 基础工作 A
-- [ ] 已完成能力 / 基础工作 B
-
-## 当前开发版本 / 下一版本
-
-### v0.x
-
-**目标：** 用一句话说明本版本要解决什么
-
-### 计划内容
-
-- [ ] 能力 / 任务 A
-- [ ] 能力 / 任务 B
-- [ ] 能力 / 任务 C
-
-### 验收条件
-
-- [ ] 可以完成 ...
-- [ ] README 中的安装、构建和运行流程已实际验证
-- [ ] 关键测试 / 真机验收通过（如适用）
-- [ ] 必要技术文档已更新
-
-### 关联
-
-- Milestone：
-- Issues：
-- 关键 PR：
-
-## 待解决问题
-
-- ...
-
-## 后续版本
-
-### vX.Y.Z
-
-目标：
-
-- ...
-
-## Backlog / 长期方向
-
-- ...
-
-## 已完成版本
-
-历史正式版本以 GitHub Releases 为准，此处只保留必要的路线图摘要，避免复制完整 Release Notes
+## Review focus
+Even-row legacy boards, nonfinite/duplicate IDs, external intrinsics replacement, automatic
+capture after reconnect, stale result after failed BA and packaged Python import roots.

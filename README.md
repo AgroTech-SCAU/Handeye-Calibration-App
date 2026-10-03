@@ -33,13 +33,13 @@ HandEye Calibration App 是面向 ROS2 机械臂手眼标定的 Linux 桌面应�
 
 GUI 参考 [Kudu](https://github.com/AdventDevInc/kudu) 的桌面设计语言，采用 Electron 自定义标题栏、侧边工作流、深色卡片、Amber 强调色以及 Light / Dark / System 主题；项目仅参考其设计语言和交互组织方式，不依赖 Kudu 运行时
 
-标定核心以 [`AgroTech-SCAU/Handeye-Calibration-App`](https://github.com/AgroTech-SCAU/Handeye-Calibration-App) `main` 为基准，并通过 Git blob 校验保证冻结核心逐字节一致
+支持普通棋盘格和 CharUco 标定板；采集、样本质量检查和 Bundle Adjustment 共用角点对应关系；核心文件通过发布清单中的 Git blob 校验进行保护
 
 ### 主要能力
 
 - Electron Linux desktop app
 - 简体中文 / English 界面切换
-- Camera intrinsic calibration
+- Camera intrinsic calibration（普通棋盘格 / CharUco）
 - Eye-in-hand sample collection
 - ROS2 `PoseStamped` 和 `JointState` 自动输入
 - 手动位姿与关节输入
@@ -209,7 +209,9 @@ ROS2 自动输入支持：
 
 #### 02 Intrinsics
 
-设置棋盘内角点列数、行数和方格尺寸后采集内参图像
+选择普通棋盘格或 CharUco 标定板，保存对应板参数后采集内参图像；**CharUco 的方格数量不是内角点数量**
+
+完整配置、会话锁定、自动采集条件和数据兼容说明见 [`docs/charuco-integration.md`](docs/charuco-integration.md)
 
 支持 Minimal、Standard 和 Strict 三种采样质量模式
 
@@ -266,6 +268,7 @@ Settings 页面提供简体中文和 English 两种界面语言
 | `ELECTRON_BUILDER_BINARIES_MIRROR` | 构建脚本自动处理 | 控制 electron-builder 二进制依赖镜像 |
 | Python environment | `./.venv/` | 使用 `/usr/bin/python3` + `--system-site-packages` 创建 |
 | GUI language | 按系统语言自动选择 | 可在 Settings 中切换并持久化 |
+| Calibration board | 普通棋盘格 / CharUco | 在 Intrinsics 中选择并保存对应板参数；CharUco 详见 `docs/charuco-integration.md` |
 
 ### Core Logic Integrity
 
@@ -278,12 +281,17 @@ python3 scripts/verify_core.py
 期望输出：
 
 ```text
-CORE INTEGRITY: PASS (11 files match GitHub main byte for byte)
+CORE INTEGRITY: PASS (14 files match release manifest)
 ```
 
-核心完整性检查覆盖以下冻结文件：
+核心完整性检查使用 [`docs/core-manifest.json`](docs/core-manifest.json) 中定义的明确发布基线；清单保留基准提交与算法参考提交，用于校验发布文件一致性；如果有意修改核心，需要先复核对应测试，再更新清单
+
+当前清单覆盖：
 
 ```text
+calibration_board.py
+capture_sync.py
+backend/bridge.py
 algorithm_runner.py
 calibration_engine.py
 config.py
@@ -296,8 +304,6 @@ algorithms/robot_params.yaml
 algorithms/solve.py
 algorithms/verify.py
 ```
-
-这些文件保持与 GitHub `main` 字节一致，因此仓库写作格式约束不应改写这些冻结核心文件
 
 ### 测试
 
@@ -319,9 +325,13 @@ npm run smoke:renderer
 Handeye-Calibration-App/
 ├── README.md
 ├── docs/
-│   └── plan.md
+│   ├── plan.md
+│   ├── charuco-integration.md
+│   └── core-manifest.json
 ├── .github/
 │   └── CONTRIBUTING.md
+├── calibration_board.py
+├── capture_sync.py
 ├── algorithm_runner.py
 ├── calibration_engine.py
 ├── config.py
@@ -349,6 +359,8 @@ Handeye-Calibration-App/
 ## 8. 文档
 
 - `docs/plan.md`：项目规划（按仓库规范维护）
+- `docs/charuco-integration.md`：CharUco 完整配置、会话锁定、自动采集条件与数据兼容说明
+- `docs/core-manifest.json`：核心文件发布基线与完整性校验清单
 - `.github/CONTRIBUTING.md`：成员协作流程与误操作急救
 - `docs/images/handeye-desktop-white.png`：README GUI 展示图
 - 本 README：安装、运行、标定工作流、构建与核心一致性检查说明
@@ -395,6 +407,10 @@ ROS_SETUP=/opt/ros/humble/setup.bash ./launch.sh
 
 **处理：** 安装 Chromium 或 Chrome 后重新执行 smoke test
 
+### CharUco 方格数量如何理解
+
+CharUco 的方格数量不是内角点数量；完整配置、会话锁定、自动采集条件和数据兼容说明见 [`docs/charuco-integration.md`](docs/charuco-integration.md)
+
 ## 10. 版本与发布
 
 正式稳定版本使用 **Git Tag + GitHub Release** 发布
@@ -405,5 +421,5 @@ ROS_SETUP=/opt/ros/humble/setup.bash ./launch.sh
 
 ## 11. 维护者
 
-- Maintainer / 项目负责人：yjjy25
+- Maintainer / 项目负责人：待补充
 - Organization：[`AgroTech-SCAU`](https://github.com/AgroTech-SCAU)

@@ -37,7 +37,9 @@ ROS2 自动采样可以选择 `PoseStamped` 或 `JointState`
 
 ## 3 Camera Intrinsics
 
-设置棋盘内角点数量和方格尺寸 mm
+选择普通棋盘格或 CharUco，保存对应板参数，尺寸使用 mm
+
+CharUco 允许局部可见，详情见 [CharUco 标定指南](docs/charuco-integration.md)
 
 采集时让棋盘覆盖画面中心、四角、不同距离和不同倾角
 
@@ -60,7 +62,7 @@ camera_intrinsics.yaml
 1. 移动机械臂到新的位置与姿态
 2. 尽量改变不同旋转轴的激励
 3. 等待机械臂停稳
-4. 确认棋盘完整可见
+4. 普通棋盘需完整可见，CharUco 需足够不共线角点
 5. 点击 Capture Sample
 
 完成采样后保存数据

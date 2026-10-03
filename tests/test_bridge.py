@@ -240,3 +240,59 @@ class BridgeIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class CharucoBridgeTests(BridgeIntegrationTests):
+    def test_charuco_capture_save_and_configuration_lock(self):
+        configured=self.bridge.request('set_config',dict(board_type='charuco',charuco_squares_x=14,
+            charuco_squares_y=9,square_size_mm=20,charuco_marker_size_mm=15,
+            charuco_dictionary='DICT_5X5_100',charuco_min_corners=6,charuco_legacy_pattern=False))
+        self.assertTrue(configured['ok'],configured)
+        self.assertEqual(configured['result']['config']['board_type'],'charuco')
+        self.bridge.request('open_camera')
+        self.bridge.read_until(lambda m:m.get('event')=='preview',timeout=10)
+        capture=self.bridge.request('capture_intrinsic',dict(quality_mode='minimal'))
+        self.assertTrue(capture['ok'],capture)
+        locked=self.bridge.request('set_config',dict(square_size_mm=25))
+        self.assertFalse(locked['ok'])
+        bad=self.bridge.request('set_config',dict(charuco_legacy_pattern='false'))
+        self.assertFalse(bad['ok'])
+        out=Path(self.bridge.temp.name)/'output'
+        out.mkdir(exist_ok=True)
+        (out/'camera_intrinsics.yaml').write_text(yaml.safe_dump(dict(camera_matrix=dict(data=[600.,0,320,0,600,240,0,0,1]),
+            distortion_coefficients=dict(data=[0.]*5),image_width=640,image_height=480)))
+        sampled=self.bridge.request('capture_handeye',dict(mode='manual',manual_type='quaternion',values=[0,0,0,0,0,0,1],quality_mode='minimal'))
+        self.assertTrue(sampled['ok'],sampled)
+        saved=self.bridge.request('save_samples')
+        self.assertTrue(saved['ok'],saved)
+        data=yaml.safe_load(Path(saved['result']['path']).read_text())
+        self.assertEqual(data['board_type'],'charuco')
+        self.assertEqual(len(data['samples'][0]['charuco_ids'])*2,len(data['samples'][0]['corners_px']))
+        self.assertFalse(self.bridge.request('set_config',dict(output_dir=str(out/'other')))['ok'])
+    def test_invalid_config_is_transactional(self):
+        before=self.bridge.request('get_state')['result']['config']
+        response=self.bridge.request('set_config',dict(camera_index=3,board_type='charuco',charuco_marker_size_mm=100))
+        self.assertFalse(response['ok'])
+        self.assertEqual(self.bridge.request('get_state')['result']['config'],before)
+    def test_failed_solver_does_not_return_stale_result(self):
+        out=Path(self.bridge.temp.name)/'output';out.mkdir(exist_ok=True)
+        (out/'samples.yaml').write_text(yaml.safe_dump(dict(handeye_mode='eye_in_hand',samples=[])))
+        (out/'samples_result.yaml').write_text(yaml.safe_dump(dict(transform_matrix=np.eye(4).tolist())))
+        response=self.bridge.request('run_tool',dict(name='solve',solve_mode='ba'))
+        self.assertTrue(response['ok'],response)
+        self.assertNotEqual(response['result']['exit_code'],0)
+        self.assertNotIn('result',response['result'])
+    def test_identical_ros_reconnect_preserves_samples(self):
+        self.assertTrue(self.bridge.request('start_ros')['ok'])
+        self.bridge.request('open_camera')
+        self.bridge.read_until(lambda m:m.get('event')=='preview',timeout=10)
+        out=Path(self.bridge.temp.name)/'output';out.mkdir(exist_ok=True)
+        (out/'camera_intrinsics.yaml').write_text(yaml.safe_dump(dict(camera_matrix=dict(data=[600.,0,320,0,600,240,0,0,1]),
+            distortion_coefficients=dict(data=[0.]*5),image_width=640,image_height=480)))
+        sample=self.bridge.request('capture_handeye',dict(mode='manual',manual_type='quaternion',values=[0,0,0,0,0,0,1],quality_mode='minimal'))
+        self.assertTrue(sample['ok'],sample)
+        self.assertTrue(self.bridge.request('stop_ros')['ok'])
+        reconnected=self.bridge.request('start_ros')
+        self.assertTrue(reconnected['ok'],reconnected)
+        self.assertEqual(self.bridge.request('get_state')['result']['handeye']['count'],1)
+        self.bridge.request('stop_ros')
+        self.assertFalse(self.bridge.request('start_ros',dict(input_topic='/different/pose'))['ok'])

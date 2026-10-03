@@ -5,6 +5,8 @@
 camera_calib.py / collect_samples.py / solve.py / verify.py 的公共函数.
 """
 
+import os
+import sys
 import cv2
 import numpy as np
 import yaml
@@ -238,7 +240,16 @@ def load_sample_validity(
             reasons.append("robot_not_stable")
 
         corners = sample.get("corners_px")
-        if corners is not None and pattern_size is not None:
+        if data.get("board_type") == "charuco":
+            try:
+                root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                if root not in sys.path:
+                    sys.path.insert(0, root)
+                from calibration_board import sample_object_points
+                sample_object_points(data, sample)
+            except (KeyError, TypeError, ValueError):
+                reasons.append("charuco_geometry_invalid")
+        elif corners is not None and pattern_size is not None:
             try:
                 grid_ok, grid_diag = validate_chessboard_geometry(
                     np.asarray(corners, dtype=np.float64).reshape(-1, 1, 2),

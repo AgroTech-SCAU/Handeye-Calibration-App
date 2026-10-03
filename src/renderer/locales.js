@@ -2,6 +2,18 @@
 
 const HANDEYE_LOCALES = {
   'zh-CN': {
+    'board.type': '标定板类型',
+    'board.chessboard': '普通棋盘格',
+    'board.squaresX': '方格列数',
+    'board.squaresY': '方格行数',
+    'board.marker': 'Marker 边长 mm',
+    'board.dictionary': 'ArUco 字典',
+    'board.minCorners': '最少角点数',
+    'board.patternCompat': '兼容 OpenCV 4.6 前的板图案',
+    'board.sessionHelp': '板尺寸按实物确认，采集中更换板、内参或分辨率前须清空数据',
+    'board.detectedCount': '已检测 {count} 个角点',
+    'solve.failed': '本次求解失败，未更新标定结果，请查看日志',
+
     'app.title': 'HandEye Calibration',
     'app.workstation': 'ROS2 手眼标定工作站',
     'sidebar.subtitle': '手眼标定工作站',
@@ -211,6 +223,18 @@ const HANDEYE_LOCALES = {
     'error.unknown': '未知错误'
   },
   'en': {
+    'board.type': 'Calibration board type',
+    'board.chessboard': 'Chessboard',
+    'board.squaresX': 'Squares in X',
+    'board.squaresY': 'Squares in Y',
+    'board.marker': 'Marker length mm',
+    'board.dictionary': 'ArUco dictionary',
+    'board.minCorners': 'Minimum corners',
+    'board.patternCompat': 'Pattern compatibility for boards made before OpenCV 4.6',
+    'board.sessionHelp': 'Measure the physical board and clear captures before changing the board, intrinsics or resolution',
+    'board.detectedCount': 'Detected {count} corners',
+    'solve.failed': 'Calibration failed and no result was updated, check the log',
+
     'app.title': 'HandEye Calibration',
     'app.workstation': 'ROS2 Calibration Workstation',
     'sidebar.subtitle': 'Hand-Eye Calibration',
