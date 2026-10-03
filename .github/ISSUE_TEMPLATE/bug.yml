@@ -1,0 +1,81 @@
+
+name: "🐛 Bug / 异常"
+description: "记录可复现的问题、故障、异常行为或回归"
+title: "[Bug] <请在此处输入简要描述>"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请尽量提供可复现信息；涉及机械臂、底盘、电机、电源等真实硬件时，先保证人员和设备安全，再继续排查
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述
+      description: 简要说明发生了什么
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望现象
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际现象
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境信息
+      description: 根据项目填写 OS、ROS / Runtime、硬件、分支 / Commit、配置文件等
+      placeholder: |
+        - OS：
+        - ROS / Runtime：
+        - 硬件：
+        - Branch / Commit：
+        - 关键配置：
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 日志 / 截图 / 波形 / 视频
+      description: 请删除或打码个人隐私、Token、密码、设备敏感信息
+
+  - type: textarea
+    id: analysis
+    attributes:
+      label: 初步判断
+      description: 如果暂时没有判断可填“暂无”
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 安全影响
+      options:
+        - label: 可能导致机械臂 / 底盘 / 电机等执行机构异常运动
+        - label: 可能导致碰撞、超限、掉落、过流或其他设备风险
+        - label: 仅影响软件、文档或非安全关键功能
+
+  - type: markdown
+    attributes:
+      value: |
+        ### 创建后怎么开始修复
+        如果由你负责处理：在 Issue 右侧 **Development → Create a branch**，推荐使用 `fix/xxx`，完成后通过 Pull Request 合并，不要直接修改 `main`

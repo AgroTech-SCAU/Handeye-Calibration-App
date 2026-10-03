@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+
+if [ "$branch" = "main" ]; then
+  cat <<'EOF'
+
+[AgroTech] ❌ 当前位于 main，不建议直接在 main 提交开发内容
+
+推荐流程：
+  Issue → Branch → Commit → Push → Pull Request
+
+如果当前修改还没有 Commit，可先执行：
+  git switch -c feat/your-work
+
+然后再 Commit
+
+完整说明：.github/CONTRIBUTING.md
+EOF
+  exit 1
+fi
+
+exit 0

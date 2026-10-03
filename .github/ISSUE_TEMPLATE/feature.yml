@@ -1,0 +1,59 @@
+
+name: "✨ 功能 / 改进"
+description: "新增能力、优化现有功能或提出明确的改进任务"
+title: "[Feature] <请在此处输入简要描述>"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请尽量把“为什么做、做到什么程度算完成”写清楚；创建 Issue 后，如果由你负责实现，优先从本 Issue 右侧 **Development → Create a branch** 创建任务分支
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目标
+      description: 希望最终实现什么？
+      placeholder: 例如：让底盘能够根据导航目标自动切换控制模式
+    validations:
+      required: true
+
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景 / 原因
+      description: 为什么需要做这件事？现状有什么问题？
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 满足什么条件可以认为任务完成？
+      placeholder: |
+        - [ ] 条件 1
+        - [ ] 条件 2
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: 涉及模块 / 影响范围
+      description: 可能涉及哪些包、模块、硬件、接口或文档？
+
+  - type: textarea
+    id: references
+    attributes:
+      label: 补充资料
+      description: 可附设计图、日志、相关 Issue / PR / 文档链接等
+
+  - type: markdown
+    attributes:
+      value: |
+        ### 创建后怎么开始开发
+        1. 在本 Issue 右侧找到 **Development**
+        2. 选择 **Create a branch**，建立 Issue 与 Branch 的关联
+        3. 推荐分支名：`feat/xxx` 或项目已有的领域前缀，例如 `adapter/xxx`、`sdk/xxx`
+        4. 在 Branch 上开发、Commit、Push，再创建 Pull Request
+        5. **不要直接在 `main` 开发**

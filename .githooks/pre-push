@@ -1,0 +1,35 @@
+#!/usr/bin/env sh
+
+blocked=0
+
+while read local_ref local_sha remote_ref remote_sha; do
+  if [ "$remote_ref" = "refs/heads/main" ]; then
+    blocked=1
+  fi
+done
+
+if [ "$blocked" -eq 1 ]; then
+  cat <<'EOF'
+
+[AgroTech] ❌ 禁止直接 Push 到 main
+
+正常流程：
+  Issue → Branch → Push Branch → Pull Request → 项目负责人 Merge
+
+如果你已经误在 main 上产生了有用 Commit：
+  1) 不要先 reset --hard，也不要因为提示 pull 就盲目 pull
+  2) 先从当前状态创建新 Branch：
+       git switch -c feat/your-work
+  3) 把新 Branch 推到远端：
+       git push -u origin HEAD
+  4) 确认 GitHub 上已保存后，再恢复本地 main：
+       git switch main
+       git fetch origin
+       git reset --hard origin/main
+
+完整说明：.github/CONTRIBUTING.md
+EOF
+  exit 1
+fi
+
+exit 0
