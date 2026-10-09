@@ -22,6 +22,9 @@ def find_default_calib_dir() -> Path:
 class AppConfig:
     calib_dir: str = str(find_default_calib_dir())
     output_dir: str = str((PORTABLE_DIR / "output").resolve())
+    camera_source: str = "ros"
+    image_topic: str = ""
+    camera_info_topic: str = ""
     camera_index: int = 0
     camera_width: int = 640
     camera_height: int = 480
@@ -36,7 +39,10 @@ class AppConfig:
     charuco_min_corners: int = 6
     charuco_legacy_pattern: bool = False
     ros_input_type: str = "pose"
-    pose_topic: str = "/arm/pose"
+    robot_base_frame: str = ""
+    robot_end_frame: str = ""
+    camera_frame: str = ""
+    pose_topic: str = ""
     joint_dof: int = 5
     joint_names: str = ""
     capture_topic: str = "/handeye/capture"

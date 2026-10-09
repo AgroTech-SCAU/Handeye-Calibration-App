@@ -1,156 +1,64 @@
-# HandEye Calibration 使用指南
+# Handeye Calibration 使用指南
 
-## 1 启动
+## 一 连接机器人
 
-源码模式
+打开 Connect 页面，选择机器人数据源
 
-```bash
-./install.sh
-./launch.sh
-```
+| 来源 | 配置要求 |
+| --- | --- |
+| PoseStamped | 选择位姿话题，填写末端 Frame，基座 Frame 可通过消息自动识别 |
+| TransformStamped | 选择变换话题，自动读取基座与末端 Frame |
+| TF2 | 填写基座 Frame 和末端 Frame，应用自动查询 |
+| JointState | 提供运动学模型和正确的关节顺序，同时明确两端 Frame |
 
-安装脚本会单独下载 Electron 二进制，并在等待期间持续显示进度
+点击发现话题可以查看与消息类型匹配的已发布话题
 
-Electron 二进制优先使用 `npmmirror`，镜像不可用时自动回退到官方源
+PoseStamped 的 `header.frame_id` 不能代表末端 Frame，必须明确描述的是哪个末端坐标系
 
-可以手动指定 Electron 镜像
+## 二 连接相机
 
-```bash
-ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ./install.sh
-```
+优先选择 ROS2 Image，填写图像话题和对应的 CameraInfo 话题
 
-Release 模式可以直接启动 AppImage，或从系统应用菜单启动 deb 安装后的 HandEye Calibration
+如果使用 USB 摄像头，也可以切换到 V4L2 输入方式
 
-## 2 Connect
+在实时预览中确认画面方向、分辨率、图像 Frame 和角点检测是否正确
 
-先选择输出目录，再配置相机与机器人输入
+## 三 相机内参
 
-本地相机模式使用 OpenCV camera index 和分辨率
+在 Intrinsics 页面配置 Chessboard 或 CharUco 的实物尺寸
 
-ROS2 自动采样可以选择 `PoseStamped` 或 `JointState`
+选择下列方式之一完成内参准备
 
-`PoseStamped` 输入填写机械臂末端位姿话题，例如 `/arm/pose`
+- 点击使用 ROS2 CameraInfo，将有效内参写入当前输出目录
+- 点击导入内参 YAML，使用已有的相机内参
+- 从多个角度采集标定板图像后求解内参
 
-`JointState` 输入填写关节状态话题，并确认 `algorithms/robot_params.yaml` 与机械臂参数一致
+CameraInfo 的分辨率与图像必须一致，非针孔畸变模型不能直接作为本应用的内参使用
 
-完成参数后连接 ROS2，并确认 Camera 和 ROS2 状态正常
+## 四 手眼采样
 
-## 3 Camera Intrinsics
+保持标定板相对于机械臂基座静止，相机与选定末端坐标系刚性固定
 
-选择普通棋盘格或 CharUco，保存对应板参数，尺寸使用 mm
+移动末端至不同位置和至少两个方向的明显旋转姿态，停稳后采集
 
-CharUco 允许局部可见，详情见 [CharUco 标定指南](docs/charuco-integration.md)
+自动模式会拒绝过期位姿、过期图像和未稳定的机器人状态
 
-采集时让棋盘覆盖画面中心、四角、不同距离和不同倾角
+只有相机与机器人共享可靠时间基准时，ROS2 消息时间戳才能用于精确判断跨设备时间偏差
 
-正式标定建议使用 Standard 模式，并采集足够数量且分布充分的图像
+## 五 求解与导出
 
-完成采集后执行 Solve & Save
+保存样本后依次使用 Diagnose、Solve 和 Verify
 
-输出文件
+手眼结果为末端 Frame 到相机光学 Frame 的 4×4 刚体变换矩阵
 
-```text
-camera_intrinsics.yaml
-```
+GUI 支持复制矩阵和导出 `handeye_transform.yaml`，包含两端 Frame、米制平移及质量指标
 
-## 4 Hand-Eye Sampling
+应用不会自动写入 TF、URDF 或其他机器人配置
 
-标定过程中保持棋盘固定
+## 六 典型机器人示例
 
-每次采样按以下顺序操作
+机械臂发布 `/arm/pose`，消息为 `base_link → tool0` 时，选择 PoseStamped 并把末端 Frame 填写为 `tool0`
 
-1. 移动机械臂到新的位置与姿态
-2. 尽量改变不同旋转轴的激励
-3. 等待机械臂停稳
-4. 普通棋盘需完整可见，CharUco 需足够不共线角点
-5. 点击 Capture Sample
+相机发布 `Image` 和 `CameraInfo` 时，选择实际话题，软件读取图像与光学 Frame
 
-完成采样后保存数据
-
-```text
-samples.yaml
-```
-
-## 5 Solve And Verify
-
-推荐工作流
-
-```text
-Diagnose -> Solve -> Verify
-```
-
-Robust 适合作为常规求解入口
-
-OpenCV 可用于直接方法对照
-
-Bundle Adjustment 可用于带完整角点数据的重投影精化
-
-结果保存在输出目录
-
-```text
-camera_intrinsics.yaml
-samples.yaml
-samples_result.yaml
-```
-
-## 6 ROS2 Environment
-
-源码启动可以显式指定 ROS2 setup
-
-```bash
-ROS_SETUP=/opt/ros/humble/setup.bash ./launch.sh
-```
-
-Ubuntu 与 ROS2 的默认映射
-
-```text
-20.04 -> Foxy
-22.04 -> Humble
-24.04 -> Jazzy
-```
-
-没有 ROS2 时仍可以使用手动机器人数据输入
-
-## 7 Runtime
-
-Release 应用需要 Python 标定运行环境
-
-Settings 页面可以执行 Install Runtime
-
-运行环境位于用户目录
-
-```text
-~/.local/share/handeye-calibration/.venv/
-```
-
-该目录不需要 sudo
-
-## 8 Language
-
-Settings 页面可以在简体中文和 English 之间切换
-
-首次启动根据系统语言自动选择，后续使用用户最后一次选择的语言
-
-切换语言不会重启 backend，也不会清空当前 ROS2 连接和采样状态
-
-## 9 Build Release
-
-```bash
-./install.sh
-./build_linux.sh
-```
-
-如果 electron-builder 下载依赖失败，构建脚本会自动使用 `npmmirror` 重试
-
-构建产物位于
-
-```text
-dist/
-```
-
-目标格式
-
-```text
-AppImage
-deb
-```
+采集与求解后得到 `tool0 → camera`，如需以其他固定末端 Frame 表达可在机器人侧进行已知刚体坐标变换

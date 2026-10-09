@@ -2,6 +2,17 @@
 
 const HANDEYE_LOCALES = {
   'zh-CN': {
+    'field.cameraSource': '相机输入方式',
+    'field.imageTopic': '图像话题 Image',
+    'field.cameraFrame': '相机光学 Frame 可自动读取',
+    'field.baseFrame': '基座 Frame（TF2 必填）',
+    'field.endFrame': '末端 Frame（PoseStamped 必填）',
+    'field.frameHelp': 'PoseStamped 仅包含基座 Frame，末端 Frame 需手动填写 | TransformStamped 自动读取两端 Frame | TF2 根据两端 Frame 查询',
+    'action.discoverTopics': '发现话题',
+    'action.useCameraInfo': '使用 ROS2 CameraInfo',
+    'action.importIntrinsics': '导入内参 YAML',
+    'action.copyMatrix': '复制矩阵',
+    'action.exportMatrix': '导出矩阵 YAML',
     'board.type': '标定板类型',
     'board.chessboard': '普通棋盘格',
     'board.squaresX': '方格列数',
@@ -223,6 +234,17 @@ const HANDEYE_LOCALES = {
     'error.unknown': '未知错误'
   },
   'en': {
+    'field.cameraSource': 'Camera source',
+    'field.imageTopic': 'Image topic',
+    'field.cameraFrame': 'Camera optical frame (auto if available)',
+    'field.baseFrame': 'Base frame (required for TF2)',
+    'field.endFrame': 'End frame (required for PoseStamped)',
+    'field.frameHelp': 'PoseStamped needs an explicit end frame | TransformStamped carries both frames | TF2 queries selected frames',
+    'action.discoverTopics': 'Discover topics',
+    'action.useCameraInfo': 'Use ROS2 CameraInfo',
+    'action.importIntrinsics': 'Import intrinsics YAML',
+    'action.copyMatrix': 'Copy matrix',
+    'action.exportMatrix': 'Export matrix YAML',
     'board.type': 'Calibration board type',
     'board.chessboard': 'Chessboard',
     'board.squaresX': 'Squares in X',

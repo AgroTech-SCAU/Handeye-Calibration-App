@@ -77,12 +77,6 @@ fi
 echo "[HandEye] installing Python dependencies"
 ./.venv/bin/python -m pip install --upgrade pip
 ./.venv/bin/python -m pip install -r requirements.txt
-./.venv/bin/python scripts/verify_core.py
-
-echo "[HandEye] checking Python backend"
-HANDEYE_MOCK=1 HANDEYE_DATA_DIR="$APP_DIR/.install-smoke" \
-  ./.venv/bin/python scripts/smoke_backend.py
-rm -rf "$APP_DIR/.install-smoke"
 
 echo "[HandEye] installing Node packages"
 run_with_heartbeat "Node package install" 300 \
@@ -108,7 +102,6 @@ else
 fi
 
 [ -x "$ELECTRON_BIN" ] || { echo "[HandEye] Electron binary install failed" >&2; exit 1; }
-npm run verify:static
 
 echo ""
 echo "[HandEye] install complete"

@@ -1,6 +1,6 @@
 
 name: "📋 一般任务"
-description: "实验、标定、测试、部署、文档、代码整理等明确任务"
+description: "实验、标定、部署、文档、代码整理等明确任务"
 title: "[Task] <请在此处输入简要描述>"
 body:
   - type: textarea
@@ -36,4 +36,4 @@ body:
     attributes:
       value: |
         ### 如果本任务需要修改仓库
-        创建 Issue 后，在右侧 **Development → Create a branch**；根据任务内容可使用 `docs/xxx`、`test/xxx`、`chore/xxx`、`refactor/xxx` 等分支；分支名以清晰可读为主，不做硬性格式检查
+        创建 Issue 后，在右侧 **Development → Create a branch**；根据任务内容可使用 `docs/xxx`、`chore/xxx`、`refactor/xxx` 等分支；分支名以清晰可读为主，不做硬性格式检查

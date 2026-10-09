@@ -11,6 +11,7 @@ function subscribe(channel, callback) {
 contextBridge.exposeInMainWorld('handeye', {
   request: (method, params = {}) => ipcRenderer.invoke('handeye:request', method, params),
   selectDirectory: initial => ipcRenderer.invoke('handeye:select-directory', initial),
+  selectIntrinsics: () => ipcRenderer.invoke('handeye:select-intrinsics'),
   runtimeInfo: () => ipcRenderer.invoke('handeye:runtime-info'),
   runtimeInstall: () => ipcRenderer.invoke('handeye:runtime-install'),
   backendRestart: () => ipcRenderer.invoke('handeye:backend-restart'),

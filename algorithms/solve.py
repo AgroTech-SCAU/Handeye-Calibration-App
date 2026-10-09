@@ -43,6 +43,19 @@ MAX_SOLVABLE_TRANS_RMS_MM = 50.0
 MAX_SOLVABLE_ROT_RMS_DEG = 10.0
 
 
+
+def _result_frames(samples_path, mode):
+    """Frames are explicit sample metadata, never inferred from arm DOF or topic names"""
+    with open(samples_path, encoding="utf-8") as source:
+        data = yaml.safe_load(source) or {}
+    if mode != 'eye_in_hand':
+        return data.get('robot_base_frame') or 'arm_base_link', data.get('camera_frame') or 'camera_optical_frame'
+    parent, child = data.get('robot_end_frame'), data.get('camera_frame')
+    if parent and child:
+        return str(parent), str(child)
+    # Keep numerical solving available for historical samples without guessing frame names
+    return str(parent or 'UNRESOLVED_END_FRAME'), str(child or 'UNRESOLVED_CAMERA_FRAME')
+
 def _load_intrinsics_binding(samples_path):
     """提取采集时冻结的内参，随手眼结果一起部署"""
     with open(samples_path, encoding="utf-8") as f:
@@ -1120,8 +1133,7 @@ def _solve_simple(
     q = matrix_to_quaternion(X_display[:3, :3])
     r, p, y = matrix_to_rpy(X_display[:3, :3])
 
-    parent = "tool0" if mode == "eye_in_hand" else "arm_base_link"
-    child = "camera_optical_frame"
+    parent, child = _result_frames(samples_path, mode)
     label = (
         "相机在末端坐标系中的位置"
         if mode == "eye_in_hand"
@@ -1289,8 +1301,7 @@ def solve(samples_path, simple=False, use_ba=False):
     r, p, y = matrix_to_rpy(X_display[:3, :3])
     q = matrix_to_quaternion(X_display[:3, :3])
 
-    parent = "tool0" if mode == "eye_in_hand" else "arm_base_link"
-    child = "camera_optical_frame"
+    parent, child = _result_frames(samples_path, mode)
     label = (
         "相机在末端坐标系中的位置"
         if mode == "eye_in_hand"

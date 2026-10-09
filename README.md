@@ -1,425 +1,68 @@
-# HandEye Calibration App
+# Handeye-Calibration-App
 
-> 面向 ROS2 机械臂的 Linux 桌面手眼标定应用，提供相机内参标定、Eye-in-Hand 样本采集、手眼求解、诊断与验证的一体化工作流
+面向 ROS2 机械臂的 Linux 桌面手眼标定应用，提供相机内参标定、Eye-in-Hand 样本采集、手眼求解、诊断与验证的一体化工作流
 
-![HandEye dark UI](docs/images/handeye-desktop-white.png)
+## 功能
 
-## 当前状态
+- ROS2 机器人位姿输入支持 `PoseStamped`、`TransformStamped`、TF2
+- 兼容需要显式运动学模型的 `JointState` 输入和手动位姿输入
+- 相机支持 ROS2 `Image`、`CameraInfo` 以及本地 V4L2 设备
+- 支持 Chessboard、CharUco、相机内参标定和内参文件导入
+- 保留 OpenCV、Robust、Bundle Adjustment 三种手眼求解方式
+- 静止状态下采集图像与机器人位姿，提示过期帧、异常姿态和坐标系错误
+- 显示、复制和导出带 Frame 定义的 4×4 手眼矩阵
 
-- **状态：** 开发中
-- **最新稳定版本：** 暂无
-- **当前开发计划：** [`docs/plan.md`](docs/plan.md)
+## 安装和启动
 
-> 首次形成可复现的稳定版本后，再创建 Git Tag + GitHub Release，并将本 README 更新为该稳定版本的完整使用说明
-
-> [!IMPORTANT]
-> ## 参与本项目开发
->
-> 推荐流程：
->
-> **Issue → Branch → Commit → Push → Pull Request → 项目负责人 Merge**
->
-> - 开始开发前，原则上先创建或认领 Issue
-> - 从 Issue 的 `Development` 区域创建任务分支，或从最新 `main` 手动创建分支
-> - 推荐分支名：`feat/xxx`、`fix/xxx`、`refactor/xxx`、`docs/xxx` 等；这是协作约定，不做硬性拦截
-> - 请勿直接在 `main` 开发或 Push
-> - 如果已经误在 `main` 上产生了有用 Commit，**不要先 `reset --hard`**，先按协作指南把提交保存到新分支
->
-> 完整流程与常见问题：[`CONTRIBUTING.md`](.github/CONTRIBUTING.md)
-
-## 1. 项目简介
-
-HandEye Calibration App 是面向 ROS2 机械臂手眼标定的 Linux 桌面应用
-
-GUI 参考 [Kudu](https://github.com/AdventDevInc/kudu) 的桌面设计语言，采用 Electron 自定义标题栏、侧边工作流、深色卡片、Amber 强调色以及 Light / Dark / System 主题；项目仅参考其设计语言和交互组织方式，不依赖 Kudu 运行时
-
-支持普通棋盘格和 CharUco 标定板；采集、样本质量检查和 Bundle Adjustment 共用角点对应关系；核心文件通过发布清单中的 Git blob 校验进行保护
-
-### 主要能力
-
-- Electron Linux desktop app
-- 简体中文 / English 界面切换
-- Camera intrinsic calibration（普通棋盘格 / CharUco）
-- Eye-in-hand sample collection
-- ROS2 `PoseStamped` 和 `JointState` 自动输入
-- 手动位姿与关节输入
-- Robust hand-eye solve
-- OpenCV solve mode
-- Bundle Adjustment solve mode
-- Diagnose / Solve / Verify 工作流
-- AppImage 与 deb Release 构建
-- Core integrity verification
-
-### 系统架构
-
-```text
-Electron Renderer
-      |
-      v
-Preload IPC
-      |
-      v
-Electron Main
-      |
-      v
-Python JSON Lines Bridge
-      |
-      +--> calibration_engine.py
-      +--> algorithm_runner.py
-      +--> ros_interface.py
-      +--> algorithms/
-```
-
-- Electron 负责桌面窗口、页面交互和状态展示
-- Python bridge 负责把 GUI 请求映射到标定核心与 ROS2 接口
-- Python 与 Electron 之间使用 stdin/stdout JSON Lines 通信，不需要本地 HTTP 服务或额外端口
-
-### 适用场景
-
-- ROS2 机械臂 Eye-in-Hand 手眼标定
-- V4L2 相机内参采集与标定
-- ROS2 自动位姿采样或手动输入采样
-- 标定结果诊断、求解与验证
-
-### 当前边界
-
-- 当前文档明确支持 Eye-in-Hand 工作流
-- ROS2 自动采样依赖对应 Ubuntu 版本可用的系统 ROS2 环境
-- OpenCV 本地相机模式要求系统存在可访问的 V4L2 相机设备
-
-## 2. 环境要求
-
-### 软件
-
-- **OS：** Ubuntu 20.04 / 22.04 / 24.04
-- **ROS / Runtime：** ROS2 Foxy / Humble / Jazzy；Node.js 20 或 22；npm
-- **Compiler / Python：** Python 3、`python3-venv`
-- **关键依赖：** Electron、OpenCV；Renderer smoke test 需要 Chromium 或 Chrome
-
-支持的平台组合：
-
-| Ubuntu | ROS2 |
-| --- | --- |
-| 20.04 | Foxy |
-| 22.04 | Humble |
-| 24.04 | Jazzy |
-
-ROS2 Python 使用系统 ROS2 对应的 Python ABI；源码安装会优先使用 `/usr/bin/python3` 创建带 `--system-site-packages` 的仓库本地虚拟环境
-
-### 硬件（如适用）
-
-- **主控：** 可运行 Ubuntu 20.04 / 22.04 / 24.04 的 Linux 主机
-- **传感器：** V4L2 相机；ROS2 模式下由机器人系统提供末端位姿 / 关节状态
-- **执行器：** ROS2 机械臂
-- **接口：** V4L2；ROS2 `PoseStamped` / `JointState`，可选 Bool trigger 与 String status
-
-## 3. 安装
-
-源码安装：
-
-```bash
-chmod +x install.sh launch.sh build_linux.sh start_ubuntu.sh uninstall.sh scripts/install-runtime.sh
-./install.sh
-```
-
-安装脚本会创建仓库本地 Python 环境：
-
-```text
-./.venv/
-```
-
-安装脚本先安装 Node package metadata，再单独下载 Electron 二进制，并在等待期间每 5 秒打印一次进度
-
-Electron 二进制优先通过 `npmmirror` 获取，镜像不可用时自动回退到官方源；也可以手动指定 Electron 镜像：
-
-```bash
-ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ./install.sh
-```
-
-## 4. 构建（如适用）
-
-构建 Linux Release：
+Ubuntu 上准备 Python、Node.js、npm 和桌面环境
 
 ```bash
 ./install.sh
-./build_linux.sh
-```
-
-构建目标：
-
-```text
-AppImage x86_64
-deb x86_64
-```
-
-构建产物位于：
-
-```text
-dist/
-```
-
-如果 `electron-builder` 下载依赖失败，`build_linux.sh` 会自动使用 `npmmirror` 重试 release 二进制依赖；也可以手动指定镜像：
-
-```bash
-ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ \
-ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ \
-./build_linux.sh
-```
-
-## 5. 快速开始
-
-### 启动应用
-
-```bash
 ./launch.sh
 ```
 
-如需显式指定 ROS2 环境：
+使用 ROS2 数据时，应用必须运行在可访问 ROS2 网络与 Python 消息包的环境中
 
 ```bash
 ROS_SETUP=/opt/ros/humble/setup.bash ./launch.sh
 ```
 
-`launch.sh` 会按以下顺序确定 ROS2 环境：
+已安装 ROS2 时可以让启动脚本自动发现环境
 
-1. 优先使用 `ROS_SETUP`
-2. 其次使用已激活的 `ROS_DISTRO`
-3. 最后根据 Ubuntu 版本或 `/opt/ros` 中的安装进行检测
+## 使用流程
 
-预期现象 / 结果：
+1. 连接机器人位姿和相机数据，必要时使用发现话题选择输入
+2. 明确机器人末端参考 Frame，相机光学 Frame 优先从 Image 和 CameraInfo 获取
+3. 选择普通棋盘格或 CharUco，并导入 CameraInfo、YAML 或重新标定内参
+4. 保持标定板固定，移动机械臂至不同位姿，每次停稳后采样
+5. 保存采集样本，运行 Diagnose、Solve 和 Verify
+6. 查看 `parent_frame → child_frame`，复制或导出 `handeye_transform.yaml`
 
-- 启动 Electron 桌面应用
-- 进入侧边工作流页面
-- 可按 Connect → Intrinsics → Hand-Eye → Solve 的顺序完成标定
+## 坐标系约定
 
-### 标定工作流
+`PoseStamped.header.frame_id` 是位姿表达的参考 Frame，消息不含末端 Frame，需要用户另外填写
 
-#### 01 Connect
+`TransformStamped` 提供 `header.frame_id` 与 `child_frame_id`，TF2 通过配置两端 Frame 查询变换
 
-设置输出目录、相机参数和机器人输入方式
+当机器人输入为 `base → end` 且相机固定在末端时，眼在手上的结果为 `end → camera`，矩阵单位为米
 
-ROS2 自动输入支持：
+应用只导出矩阵，不修改机器人 URDF、TF 或控制器配置
 
-| Input | ROS2 Type | Data |
-| --- | --- | --- |
-| End-effector pose | `geometry_msgs/msg/PoseStamped` | xyz in m and quaternion xyzw |
-| Joint state | `sensor_msgs/msg/JointState` | joint position in rad |
-| Capture trigger | `std_msgs/msg/Bool` | optional |
-| Status output | `std_msgs/msg/String` | optional JSON status |
+## 相机内参
 
-#### 02 Intrinsics
+ROS2 CameraInfo 仅支持本应用可处理的针孔相机与兼容的畸变模型，必须与采集图像分辨率一致
 
-选择普通棋盘格或 CharUco 标定板，保存对应板参数后采集内参图像；**CharUco 的方格数量不是内角点数量**
+图像支持 `bgr8`、`rgb8`、`bgra8`、`rgba8`、`mono8` 和 `8UC1`，RGB-D 相机手眼标定无需强制订阅深度数据
 
-完整配置、会话锁定、自动采集条件和数据兼容说明见 [`docs/charuco-integration.md`](docs/charuco-integration.md)
+使用不同设备时确认图像和位姿时间基准，静止采样采用接收时间配对与机械臂稳定性检查，不能替代运动中的硬件曝光同步
 
-支持 Minimal、Standard 和 Strict 三种采样质量模式
+## 目录说明
 
-输出文件：
-
-```text
-camera_intrinsics.yaml
-```
-
-#### 03 Hand-Eye
-
-固定棋盘后移动机械臂，在不同位置和姿态下采集图像与机器人位姿配对样本
-
-输出文件：
-
-```text
-samples.yaml
-```
-
-#### 04 Solve
-
-提供 Diagnose、Solve 和 Verify 操作
-
-求解模式包括 Robust、OpenCV 和 Bundle Adjustment
-
-输出文件：
-
-```text
-samples_result.yaml
-```
-
-Eye-in-Hand 结果约定：
-
-```text
-^gripper T_camera
-```
-
-### 界面语言
-
-Settings 页面提供简体中文和 English 两种界面语言
-
-- 首次启动根据系统语言自动选择；系统语言为 `zh-*` 时使用简体中文，其余语言使用 English
-- 用户手动选择后会保存偏好，后续启动继续使用上次选择的语言
-- 语言切换仅刷新界面文案，不重启 Python backend，也不会断开当前 ROS2 与采样会话
-
-## 6. 配置说明
-
-### 启动与运行配置
-
-| 配置项 | 默认值 / 行为 | 说明 |
-| --- | --- | --- |
-| `ROS_SETUP` | 自动检测 | 可显式指定 ROS2 `setup.bash` |
-| `ELECTRON_MIRROR` | `npmmirror` 优先，失败回退官方源 | 控制 Electron 二进制下载镜像 |
-| `ELECTRON_BUILDER_BINARIES_MIRROR` | 构建脚本自动处理 | 控制 electron-builder 二进制依赖镜像 |
-| Python environment | `./.venv/` | 使用 `/usr/bin/python3` + `--system-site-packages` 创建 |
-| GUI language | 按系统语言自动选择 | 可在 Settings 中切换并持久化 |
-| Calibration board | 普通棋盘格 / CharUco | 在 Intrinsics 中选择并保存对应板参数；CharUco 详见 `docs/charuco-integration.md` |
-
-### Core Logic Integrity
-
-运行核心逻辑一致性检查：
-
-```bash
-python3 scripts/verify_core.py
-```
-
-期望输出：
-
-```text
-CORE INTEGRITY: PASS (14 files match release manifest)
-```
-
-核心完整性检查使用 [`docs/core-manifest.json`](docs/core-manifest.json) 中定义的明确发布基线；清单保留基准提交与算法参考提交，用于校验发布文件一致性；如果有意修改核心，需要先复核对应测试，再更新清单
-
-当前清单覆盖：
-
-```text
-calibration_board.py
-capture_sync.py
-backend/bridge.py
-algorithm_runner.py
-calibration_engine.py
-config.py
-ros_interface.py
-algorithms/bundle_adjust.py
-algorithms/calib_utils.py
-algorithms/diagnose.py
-algorithms/fk_utils.py
-algorithms/robot_params.yaml
-algorithms/solve.py
-algorithms/verify.py
-```
-
-### 测试
-
-```bash
-python3 -m unittest discover -s tests -v
-node scripts/verify_static.js
-python3 scripts/verify_core.py
-```
-
-安装 Chromium 或 Chrome 后可以运行 Renderer smoke test：
-
-```bash
-npm run smoke:renderer
-```
-
-## 7. 目录结构
-
-```text
-Handeye-Calibration-App/
-├── README.md
-├── docs/
-│   ├── plan.md
-│   ├── charuco-integration.md
-│   └── core-manifest.json
-├── .github/
-│   └── CONTRIBUTING.md
-├── calibration_board.py
-├── capture_sync.py
-├── algorithm_runner.py
-├── calibration_engine.py
-├── config.py
-├── ros_interface.py
-├── algorithms/
-├── backend/
-│   └── bridge.py
-├── desktop/
-│   ├── main.js
-│   └── preload.js
-├── src/renderer/
-│   ├── index.html
-│   ├── app.js
-│   └── styles.css
-├── resources/
-│   └── icon.png
-├── scripts/
-├── tests/
-├── install.sh
-├── launch.sh
-├── build_linux.sh
-└── package.json
-```
-
-## 8. 文档
-
-- `docs/plan.md`：项目规划（按仓库规范维护）
-- `docs/charuco-integration.md`：CharUco 完整配置、会话锁定、自动采集条件与数据兼容说明
-- `docs/core-manifest.json`：核心文件发布基线与完整性校验清单
-- `.github/CONTRIBUTING.md`：成员协作流程与误操作急救
-- `docs/images/handeye-desktop-white.png`：README GUI 展示图
-- 本 README：安装、运行、标定工作流、构建与核心一致性检查说明
-
-后续如项目需要，可继续补充：
-
-- `docs/architecture.md`：系统架构
-- `docs/interface.md`：接口说明
-- `docs/deployment.md`：部署说明
-- `docs/calibration.md`：标定说明
-- `docs/troubleshooting.md`：故障排查
-
-## 9. 常见问题
-
-### Electron 下载失败
-
-**现象：** `./install.sh` 在 Electron 二进制下载阶段失败
-
-**原因：** 当前镜像或网络环境无法访问对应 Electron 资源
-
-**处理：** 安装脚本默认优先使用 `npmmirror`，失败后会回退官方源；也可手动指定：
-
-```bash
-ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ./install.sh
-```
-
-### 启动时未找到正确的 ROS2 环境
-
-**现象：** ROS2 自动输入不可用，或 `launch.sh` 未加载预期 ROS2 发行版
-
-**原因：** 当前 shell 未激活 ROS2，且自动检测结果与实际环境不一致
-
-**处理：** 显式指定：
-
-```bash
-ROS_SETUP=/opt/ros/humble/setup.bash ./launch.sh
-```
-
-### Renderer smoke test 无法运行
-
-**现象：** `npm run smoke:renderer` 无法启动浏览器测试
-
-**原因：** 系统未安装 Chromium 或 Chrome
-
-**处理：** 安装 Chromium 或 Chrome 后重新执行 smoke test
-
-### CharUco 方格数量如何理解
-
-CharUco 的方格数量不是内角点数量；完整配置、会话锁定、自动采集条件和数据兼容说明见 [`docs/charuco-integration.md`](docs/charuco-integration.md)
-
-## 10. 版本与发布
-
-正式稳定版本使用 **Git Tag + GitHub Release** 发布
-
-当前 README 未提供已发布的稳定版本号，因此暂按“开发中 / 暂无稳定版本”维护
-
-版本历史见：[GitHub Releases](https://github.com/AgroTech-SCAU/Handeye-Calibration-App/releases)
-
-## 11. 维护者
-
-- Maintainer / 项目负责人：待补充
-- Organization：[`AgroTech-SCAU`](https://github.com/AgroTech-SCAU)
+- `src/renderer/` — 桌面 GUI
+- `desktop/` — Electron 桌面进程
+- `backend/bridge.py` — GUI 与算法接口
+- `ros_interface.py` — ROS2 机器人位姿和相机输入
+- `calibration_board.py` — 标定板角点与几何关系
+- `calibration_engine.py` — 内参与手眼样本采集
+- `algorithms/` — 标定求解、诊断、精化与结果核验
+- `USER_GUIDE.md` — 操作指南

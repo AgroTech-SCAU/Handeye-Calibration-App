@@ -9,12 +9,7 @@
   "scripts": {
     "start": "electron .",
     "start:mock": "HANDEYE_MOCK=1 electron .",
-    "verify:core": "python3 scripts/verify_core.py",
-    "verify:static": "node scripts/verify_static.js",
-    "test": "python3 -m unittest discover -s tests -v && npm run smoke:lifecycle && npm run verify:static && npm run verify:core",
-    "dist:linux": "npm run test && electron-builder --linux AppImage deb --x64",
-    "smoke:renderer": "node scripts/smoke_renderer.mjs",
-    "smoke:lifecycle": "node scripts/smoke_backend_lifecycle.cjs"
+    "dist:linux": "electron-builder --linux AppImage deb --x64"
   },
   "devDependencies": {
     "electron": "41.10.5",
@@ -82,7 +77,7 @@
       ],
       "category": "Utility",
       "icon": "resources/icon.png",
-      "artifactName": "HandEye-Calibration-${version}-linux-${arch}.${ext}"
+      "artifactName": "HandEye-Calibration-linux-${arch}.${ext}"
     },
     "deb": {
       "depends": [

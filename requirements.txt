@@ -1,4 +1,4 @@
-numpy>=1.24
+numpy>=1.24,<2
 # OpenCV 5 的部分发行包不再暴露 calibrateHandEye；求解器使用 4.x API
 opencv-python-headless>=4.8,<5
 PyYAML>=6.0

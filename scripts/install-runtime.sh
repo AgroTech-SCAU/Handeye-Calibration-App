@@ -78,7 +78,7 @@ import cv2
 import numpy
 import scipy
 import yaml
-print(f"[HandEye] Python runtime OK: numpy={numpy.__version__}, opencv={cv2.__version__}, scipy={scipy.__version__}")
+print("[HandEye] Python runtime ready")
 PY
 
 if [ -n "$ROS_FILE" ]; then

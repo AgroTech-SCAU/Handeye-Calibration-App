@@ -357,10 +357,17 @@ ipcMain.handle('handeye:select-directory', async (_event, initial) => {
   })
   return result.canceled ? '' : (result.filePaths[0] || '')
 })
+ipcMain.handle('handeye:select-intrinsics', async () => {
+  const result = await dialog.showOpenDialog(win, {
+    title: '选择相机内参 YAML',
+    properties: ['openFile'],
+    filters: [{ name: 'YAML', extensions: ['yaml', 'yml'] }]
+  })
+  return result.canceled ? '' : (result.filePaths[0] || '')
+})
 ipcMain.handle('handeye:runtime-info', () => {
   const cfg = bridgeCommand()
   return {
-    appVersion: app.getVersion(),
     packaged: app.isPackaged,
     platform: process.platform,
     arch: process.arch,
