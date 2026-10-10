@@ -347,7 +347,53 @@ def discover_ros_topics():
         rclpy.init(args=None)
     node = Node("handeye_topic_discovery")
     try:
-        rclpy.spin_once(node, timeout_sec=0.2)
+        rclpy.spin_once(node, timeout_sec=0.5)
         return [{"topic": name, "types": types} for name, types in sorted(node.get_topic_names_and_types())]
+    finally:
+        node.destroy_node()
+
+
+def inspect_ros_topic(topic: str, message_type: str, timeout_sec: float = 0.9):
+    """Read one published sample to discover frame and image/pose metadata"""
+    permitted = {
+        "sensor_msgs/msg/Image", "sensor_msgs/msg/CameraInfo",
+        "geometry_msgs/msg/PoseStamped", "geometry_msgs/msg/TransformStamped",
+        "sensor_msgs/msg/JointState", "std_msgs/msg/Bool", "std_msgs/msg/String",
+    }
+    if message_type not in permitted or not topic.startswith("/"):
+        raise ValueError("话题名称或消息类型无效")
+    try:
+        import rclpy
+        from rclpy.node import Node
+        from rclpy.qos import qos_profile_sensor_data
+        from rosidl_runtime_py.utilities import get_message
+    except ImportError as exc:
+        raise RuntimeError("未找到 ROS2 环境，无法读取话题信息") from exc
+    if not rclpy.ok():
+        rclpy.init(args=None)
+    node = Node("handeye_topic_probe")
+    observed = {}
+    def callback(msg):
+        info = {"topic": topic, "type": message_type}
+        header = getattr(msg, "header", None)
+        if header is not None:
+            info["frame_id"] = str(header.frame_id).lstrip("/")
+        if message_type == "sensor_msgs/msg/Image":
+            info.update(width=int(msg.width), height=int(msg.height), encoding=str(msg.encoding))
+        elif message_type == "sensor_msgs/msg/CameraInfo":
+            info.update(width=int(msg.width), height=int(msg.height),
+                        distortion_model=str(msg.distortion_model))
+        elif message_type == "geometry_msgs/msg/TransformStamped":
+            info["child_frame_id"] = str(msg.child_frame_id).lstrip("/")
+        elif message_type == "sensor_msgs/msg/JointState":
+            info["joint_names"] = list(msg.name)
+        observed.update(info)
+    try:
+        # Sensor QoS is compatible with both best-effort and reliable publishers
+        subscription = node.create_subscription(get_message(message_type), topic, callback, qos_profile_sensor_data)
+        deadline = time.monotonic() + max(.1, min(float(timeout_sec), 1.5))
+        while not observed and time.monotonic() < deadline:
+            rclpy.spin_once(node, timeout_sec=min(.1, max(0.0, deadline-time.monotonic())))
+        return {"received": bool(observed), "metadata": observed}
     finally:
         node.destroy_node()

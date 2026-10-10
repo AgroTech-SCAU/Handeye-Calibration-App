@@ -56,7 +56,7 @@ from calibration_engine import CameraSession, HandEyeCollection, IntrinsicCalibr
 from calibration_board import CalibrationBoard, positive_int
 from capture_sync import PoseHistory
 from config import AppConfig
-from ros_interface import RosInterface, RosCameraInterface, RosJoints, RosPose, discover_ros_topics
+from ros_interface import RosInterface, RosCameraInterface, RosJoints, RosPose, discover_ros_topics, inspect_ros_topic
 
 
 class JsonOut:
@@ -126,6 +126,7 @@ class Bridge:
         self.intrinsic = IntrinsicCalibration()
         self.handeye = HandEyeCollection()
         self.latest_pose: RosPose | None = None
+        self.latest_pose_at = None
         self.latest_robot_input: tuple[float, ...] | None = None
         self.latest_input_mode = "ros_pose"
         self.last_error = ""
@@ -151,7 +152,7 @@ class Bridge:
     def _state(self) -> dict[str, Any]:
         out, intrinsics, samples = self._paths()
         pose = None
-        if self.latest_pose is not None:
+        if self.latest_pose is not None and (self.mock or (self.latest_pose_at is not None and time.monotonic()-self.latest_pose_at < 1.5)):
             pose = {
                 "values": list(self.latest_pose.values),
                 "timestamp": self.latest_pose.timestamp,
@@ -185,8 +186,12 @@ class Bridge:
             },
             "camera": {
                 "open": self.camera_open,
+                "receiving": bool(self.camera_open and self.current_frame is not None and
+                                  self.frame_received_at is not None and
+                                  time.monotonic()-self.frame_received_at < 1.5),
                 "frame_id": self.frame_id,
                 "camera_info_ready": self.camera_info is not None,
+                "camera_info_frame": (self.camera_info or {}).get("frame_id", ""),
                 "board_found": bool(self.board_found),
                         "corner_count": len(self.board_corners) if self.board_found else 0,
                 "width": int(self.current_frame.shape[1]) if self.current_frame is not None else self.config.camera_width,
@@ -242,6 +247,7 @@ class Bridge:
 
     def _camera_loop(self) -> None:
         last_state = 0.0
+        last_ros_preview_at = None
         while self._running:
             frame = None
             if self.camera_open and self.config.camera_source == "v4l2":
@@ -261,7 +267,12 @@ class Bridge:
                     self.frame_id = self.config.camera_frame
             elif self.camera_open and self.config.camera_source == "ros":
                 with self.frame_lock:
-                    frame = None if self.current_frame is None else self.current_frame.copy()
+                    fresh = (self.frame_received_at is not None and
+                             time.monotonic()-self.frame_received_at < 1.5 and
+                             self.frame_received_at != last_ros_preview_at)
+                    frame = self.current_frame.copy() if fresh and self.current_frame is not None else None
+                    if fresh:
+                        last_ros_preview_at = self.frame_received_at
             if frame is not None:
                 self.frame_counter += 1
                 if self.frame_counter % 3 == 0:
@@ -301,13 +312,19 @@ class Bridge:
 
     def _on_image(self, frame: np.ndarray, stamp: float, frame_id: str) -> None:
         # ROS2 subscription owns the capture timestamp, not the preview thread
+        old_frame = self.frame_id
+        old_size = self.current_frame.shape[:2] if self.current_frame is not None else ()
         with self.frame_lock:
             self.current_frame = frame
             self.frame_received_at = time.monotonic()
             self.frame_ros_stamp = stamp if stamp > 0 else None
             self.frame_id = str(frame_id).lstrip("/")
+        if old_frame != self.frame_id or old_size != frame.shape[:2]:
+            self._emit("camera_metadata", {"frame_id": self.frame_id,
+                                           "width": int(frame.shape[1]), "height": int(frame.shape[0])})
 
     def _on_camera_info(self, message) -> None:
+        previous = self.camera_info
         matrix = [float(v) for v in message.k]
         distortion = [float(v) for v in message.d]
         model = str(message.distortion_model)
@@ -324,6 +341,9 @@ class Bridge:
             frame_id=str(message.header.frame_id).lstrip("/"),
             distortion_model=model, origin="ROS2 CameraInfo",
         )
+        if previous is None or previous.get("frame_id") != self.camera_info["frame_id"]:
+            self._emit("camera_metadata", {"frame_id": self.camera_info["frame_id"],
+                                           "width": int(message.width), "height": int(message.height)})
 
     @serialized
     def import_camera_info(self, _params: dict[str, Any]) -> dict[str, Any]:
@@ -399,6 +419,7 @@ class Bridge:
             self._emit("error", {"message": str(exc)})
             return
         self.latest_pose = pose
+        self.latest_pose_at = time.monotonic()
         self.latest_robot_input = pose.values
         self.latest_input_mode = "ros_pose"
         self._emit("pose", {
@@ -411,6 +432,7 @@ class Bridge:
             pose_values = joints_to_pose(joints.values)
             self.pose_history.add(pose_values, time.monotonic(), joints.timestamp, joints.values, "ros_joints")
             self.latest_pose = RosPose(pose_values, joints.timestamp, joints.frame_id or self.config.robot_base_frame, self.config.robot_end_frame)
+            self.latest_pose_at = time.monotonic()
             self.latest_robot_input = joints.values
             self.latest_input_mode = "ros_joints"
             self._emit("pose", {
@@ -480,6 +502,64 @@ class Bridge:
                 self.current_frame, self.frame_received_at = None, None
             self.pose_history.clear()
             self.camera_info = None
+        return self._state()
+
+    @serialized
+    def connect_robot(self, _params: dict[str, Any]) -> dict[str, Any]:
+        """Connect the selected pose source and camera together, with rollback"""
+        c = self.config
+        expected = {
+            "pose": "geometry_msgs/msg/PoseStamped",
+            "transform": "geometry_msgs/msg/TransformStamped",
+            "joints": "sensor_msgs/msg/JointState",
+        }
+        if c.camera_source == "ros" and not c.image_topic.strip():
+            raise ValueError("请选择相机 Image 话题")
+        if c.ros_input_type != "tf" and not c.pose_topic.strip():
+            raise ValueError("请选择机械臂位姿话题")
+        if c.ros_input_type == "pose" and not c.robot_end_frame:
+            raise ValueError("PoseStamped 不携带末端 Frame，请填写末端 Frame")
+        if c.ros_input_type in ("tf", "joints") and (not c.robot_base_frame or not c.robot_end_frame):
+            raise ValueError("请填写基座 Frame 与末端 Frame")
+        if c.camera_source == "ros" and c.camera_frame and c.camera_info_topic and self.camera_info:
+            known = self.camera_info.get("frame_id", "")
+            if known and known != c.camera_frame:
+                raise ValueError("CameraInfo Frame 与配置的相机 Frame 不一致")
+        if not self.mock:
+            graph = {record["topic"]: record["types"] for record in discover_ros_topics()}
+            required = [(c.image_topic, "sensor_msgs/msg/Image")] if c.camera_source == "ros" else []
+            if c.camera_source == "ros" and c.camera_info_topic:
+                required.append((c.camera_info_topic, "sensor_msgs/msg/CameraInfo"))
+            if c.ros_input_type != "tf":
+                required.append((c.pose_topic, expected[c.ros_input_type]))
+            if c.capture_topic:
+                required.append((c.capture_topic, "std_msgs/msg/Bool"))
+            for name, kind in required:
+                if kind not in graph.get(name, []):
+                    raise ValueError(f"话题 {name} 不存在或消息类型不匹配，需要 {kind}，请重新搜索话题")
+        was_ros = bool(self.ros.running)
+        was_camera = self.camera_open
+        try:
+            if not was_ros:
+                self.start_ros({})
+            if not was_camera:
+                self.open_camera({})
+        except Exception:
+            if not was_camera and self.camera_open:
+                self.close_camera({})
+            if not was_ros and self.ros.running:
+                self.stop_ros({})
+            raise
+        self._emit_state()
+        return self._state()
+
+    @serialized
+    def disconnect_robot(self, _params: dict[str, Any]) -> dict[str, Any]:
+        if self.camera_open:
+            self.close_camera({})
+        if self.ros.running or self.latest_pose is not None:
+            self.stop_ros({})
+        self._emit_state()
         return self._state()
 
     @serialized
@@ -589,6 +669,7 @@ class Bridge:
         if not self.mock:
             self.ros.stop()
         self.latest_pose = None
+        self.latest_pose_at = None
         self.pose_history.clear()
         self.latest_robot_input = None
         if not self.handeye.samples:
@@ -766,7 +847,20 @@ class Bridge:
         if method == "set_config":
             return self._apply_config(params)
         if method == "discover_topics":
-            return {"topics": discover_ros_topics()}
+            return {"topics": [] if self.mock else discover_ros_topics()}
+        if method == "inspect_topic":
+            if self.mock:
+                return {"received": False, "metadata": {}}
+            topic = str(params.get("topic", ""))
+            kind = str(params.get("message_type", ""))
+            graph = {record["topic"]: record["types"] for record in discover_ros_topics()}
+            if kind not in graph.get(topic, []):
+                raise ValueError("选择的话题不存在或类型不匹配，请重新搜索")
+            return inspect_ros_topic(topic, kind)
+        if method == "connect_robot":
+            return self.connect_robot(params)
+        if method == "disconnect_robot":
+            return self.disconnect_robot(params)
         if method == "import_camera_info":
             return self.import_camera_info(params)
         if method == "import_intrinsics":

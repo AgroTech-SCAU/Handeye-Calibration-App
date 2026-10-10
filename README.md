@@ -31,12 +31,14 @@ ROS_SETUP=/opt/ros/humble/setup.bash ./launch.sh
 
 ## 使用流程
 
-1. 连接机器人位姿和相机数据，必要时使用发现话题选择输入
-2. 明确机器人末端参考 Frame，相机光学 Frame 优先从 Image 和 CameraInfo 获取
-3. 选择普通棋盘格或 CharUco，并导入 CameraInfo、YAML 或重新标定内参
-4. 保持标定板固定，移动机械臂至不同位姿，每次停稳后采样
-5. 保存采集样本，运行 Diagnose、Solve 和 Verify
-6. 查看 `parent_frame → child_frame`，复制或导出 `handeye_transform.yaml`
+1. 在连接页面设置输出目录，在统一机器人接口中选择相机输入与机械臂位姿来源
+2. 点击「搜索话题」，从按消息类型过滤的下拉列表选择 Image、CameraInfo 与机械臂位姿话题
+3. 选择话题后自动读取可获得的 Frame、分辨率或关节名称，`PoseStamped` 的末端 Frame 由用户明确填写
+4. 点击「连接机器人」，应用先检查必填信息和话题类型，再同时连接位姿与相机，并在收到图像后开启实时预览
+5. 选择普通棋盘格或 CharUco，并导入 CameraInfo、YAML 或重新标定内参
+6. 保持标定板固定，移动机械臂至不同位姿，每次停稳后采样
+7. 保存采集样本，运行 Diagnose、Solve 和 Verify
+8. 查看 `parent_frame → child_frame`，复制或导出 `handeye_transform.yaml`
 
 ## 坐标系约定
 

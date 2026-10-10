@@ -38,7 +38,7 @@ const initialLanguage = i18n?.loadLanguage?.() || 'en'
 const state = {
   page:'connect', theme:localStorage.getItem('handeye-theme') || 'dark', language:initialLanguage, backend:'starting', runtime:null,
   data:{ config:{output_dir:'',camera_source:'ros',image_topic:'',camera_info_topic:'',camera_frame:'',robot_base_frame:'',robot_end_frame:'',camera_index:0,camera_width:640,camera_height:480,chessboard_cols:11,chessboard_rows:8,square_size_mm:15,board_type:'chessboard',charuco_squares_x:14,charuco_squares_y:9,charuco_marker_size_mm:15,charuco_dictionary:'DICT_5X5_100',charuco_min_corners:6,charuco_legacy_pattern:false,ros_input_type:'pose',pose_topic:'',joint_dof:5,joint_names:'',capture_topic:'',status_topic:'/handeye/status'}, camera:{open:false,board_found:false,width:640,height:480}, ros:{running:false,pose:null}, intrinsics:{count:0,exists:false}, handeye:{count:0,samples_exists:false}, output_dir:'' },
-  discoveredTopics:[], preview:'', logs:'', intrinsicQuality:'standard', handeyeQuality:'standard', sampleMode:'auto', manualType:'quaternion', angleUnit:'deg', solveMode:'robust',
+  discoveredTopics:[], discoveredOnce:false, topicDetails:{}, autoFilled:new Set(), inspectingTopic:false, preview:'', logs:'', intrinsicQuality:'standard', handeyeQuality:'standard', sampleMode:'auto', manualType:'quaternion', angleUnit:'deg', solveMode:'robust',
   intrinsicResult:null, solveResult:null, runtimeInstallLog:'', runtimeInstallState:'idle'
 }
 
@@ -52,6 +52,9 @@ function createMockApi() {
       if(method==='get_state'||method==='ping') return method==='ping'?{pong:true,mock:true}:mock
       if(method==='set_config'){ Object.assign(mock.config,params); mock.output_dir=mock.config.output_dir; emit('state',mock); return mock }
       if(method==='discover_topics')return {topics:[]};
+      if(method==='inspect_topic')return {received:false,metadata:{}};
+      if(method==='connect_robot'){mock.ros.running=true;mock.ros.pose={values:[.412,-.083,.536,.012,.713,.008,.701],frame_id:mock.config.robot_base_frame||'base_link',child_frame_id:mock.config.robot_end_frame||'tool0',timestamp:Date.now()/1000};mock.camera.open=true;mock.camera.receiving=true;emit('pose',mock.ros.pose);emit('state',mock);return mock}
+      if(method==='disconnect_robot'){mock.ros.running=false;mock.ros.pose=null;mock.camera.open=false;mock.camera.receiving=false;emit('state',mock);return mock}
       if(method==='import_camera_info'||method==='import_intrinsics')return {path:'/tmp/handeye/camera_intrinsics.yaml'};
       if(method==='export_matrix')return {path:'/tmp/handeye/handeye_transform.yaml'};
       if(method==='open_camera'){ mock.camera.open=true; mock.camera.board_found=true; emit('state',mock); return mock.camera }
@@ -186,25 +189,55 @@ function pageHead(kicker,title,desc,actions=''){return `<div class="page-head"><
 function card(title,subtitle,ico,body,footer='',accent=false){return `<section class="card"><div class="card-head"><span class="card-icon ${accent?'accent':''}">${icon(ico)}</span><div><h3 class="card-title">${title}</h3>${subtitle?`<p class="card-subtitle">${subtitle}</p>`:''}</div></div><div class="card-body">${body}</div>${footer?`<div class="card-footer">${footer}</div>`:''}</section>`}
 function field(label,id,value,type='text',help=''){return `<div class="field"><label for="${id}">${label}</label><input class="control" id="${id}" type="${type}" value="${escapeHtml(value)}"/>${help?`<div class="help">${help}</div>`:''}</div>`}
 function btn(id,label,ico='play',kind='',extra=''){return `<button class="btn ${kind}" id="${id}" ${extra}>${icon(ico)}${label}</button>`}
-function preview(){const cam=state.data.camera||{};return `<section class="card preview-card"><div class="preview-toolbar"><b>${t('preview.title')}</b><span class="pill" id="preview-live-pill">${dot(cam.open?'success':'warning')} ${cam.open?t('status.live'):t('status.offline')}</span><span class="meta" id="preview-size">${cam.width||640} × ${cam.height||480}</span></div><div class="preview-surface" id="preview-surface">${state.preview?`<img class="preview-image" src="data:image/jpeg;base64,${state.preview}"/>`:`<div class="preview-empty"><div class="ring">${icon('camera')}</div><b>${t('preview.waitingTitle')}</b><span>${t('preview.waitingDesc')}</span></div>`}</div></section>`}
+function preview(){const cam=state.data.camera||{};return `<section class="card preview-card"><div class="preview-toolbar"><b>${t('preview.title')}</b><span class="pill" id="preview-live-pill">${dot(cam.receiving?'success':'warning')} ${cam.receiving?t('status.live'):cam.open?t('status.waiting'):t('status.offline')}</span><span class="meta" id="preview-size">${cam.width||640} × ${cam.height||480}</span></div><div class="preview-surface" id="preview-surface">${state.preview?`<img class="preview-image" src="data:image/jpeg;base64,${state.preview}"/>`:`<div class="preview-empty"><div class="ring">${icon('camera')}</div><b>${t('preview.waitingTitle')}</b><span>${t('preview.waitingDesc')}</span></div>`}</div></section>`}
 
-function topicOptions(type){const accepted={image:['sensor_msgs/msg/Image'],info:['sensor_msgs/msg/CameraInfo'],pose:['geometry_msgs/msg/PoseStamped'],transform:['geometry_msgs/msg/TransformStamped'],joints:['sensor_msgs/msg/JointState']}[type]||[];return (state.discoveredTopics||[]).filter(x=>x.types?.some(t=>accepted.includes(t))).map(x=>`<option value="${escapeHtml(x.topic)}"></option>`).join('')}
-function renderConnect(){const c=state.data.config,cam=state.data.camera,ros=state.data.ros;const isRos=c.camera_source!=='v4l2';const inputType=c.ros_input_type||'pose';return `<div class="page">${pageHead(t('connect.kicker'),t('connect.title'),t('connect.desc'))}
-<div class="grid three" style="margin-bottom:14px"><div class="metric"><div class="metric-label">${t('connect.metricCamera')}</div><div class="metric-value" style="color:${cam.open?'var(--success)':'var(--text-secondary)'}">${cam.open?t('status.connected'):t('status.offline')}</div><div class="metric-meta">${escapeHtml(isRos?c.image_topic:t('connect.device',{index:c.camera_index,width:c.camera_width,height:c.camera_height}))}</div></div><div class="metric"><div class="metric-label">${t('connect.metricRobot')}</div><div class="metric-value" style="color:${ros.running?'var(--success)':'var(--text-secondary)'}">${ros.running?t('status.receiving'):t('status.disconnected')}</div><div class="metric-meta">${escapeHtml(inputType==='tf'?(c.robot_base_frame+' → '+c.robot_end_frame):c.pose_topic)}</div></div><div class="metric"><div class="metric-label">${t('connect.metricOutput')}</div><div class="metric-value">${state.data.handeye?.count||0}<small>${t('connect.samples')}</small></div><div class="metric-meta">${escapeHtml(c.output_dir||t('connect.notConfigured'))}</div></div></div>
-<div class="grid preview-layout">${preview()}<div class="stack">
-${card(t('connect.projectCamera'),t('connect.projectCameraDesc'),'camera',`<div class="form-row"><div class="field full"><label>${t('field.outputDir')}</label><div class="inline-control"><input class="control" id="output-dir" value="${escapeHtml(c.output_dir)}"/><button class="btn" id="browse-output">${icon('folder')}${t('action.browse')}</button></div></div></div>
-<div class="form-row"><div class="field full"><label>${t('field.cameraSource')}</label><select class="control" id="camera-source"><option value="ros" ${isRos?'selected':''}>ROS2 Image</option><option value="v4l2" ${!isRos?'selected':''}>V4L2 / USB</option></select></div></div>
-<div class="form-row" id="camera-ros-fields" style="display:${isRos?'grid':'none'}">${topicField(t('field.imageTopic'),'image-topic',c.image_topic,'image')}${topicField('CameraInfo','camera-info-topic',c.camera_info_topic,'info')}</div>
-<div class="form-row" id="camera-local-fields" style="display:${!isRos?'grid':'none'}">${field(t('field.cameraIndex'),'camera-index',c.camera_index,'number')}${field(t('field.width'),'camera-width',c.camera_width,'number')}${field(t('field.height'),'camera-height',c.camera_height,'number')}</div>
-<div class="form-row">${field(t('field.cameraFrame'),'camera-frame',c.camera_frame||'')}</div>`,`<div class="actions">${btn('discover-topics',t('action.discoverTopics'),'scan')}${btn('save-connect',t('action.saveSettings'),'save')}${cam.open?btn('close-camera',t('action.closeCamera'),'square',''):btn('open-camera',t('action.openCamera'),'camera','primary')}</div>`,true)}
-${card(t('connect.robotInterface'),t('connect.robotInterfaceDesc'),'plug',`<div class="form-row"><div class="field"><label>${t('field.inputType')}</label><select class="control" id="ros-input-type"><option value="pose" ${inputType==='pose'?'selected':''}>PoseStamped</option><option value="transform" ${inputType==='transform'?'selected':''}>TransformStamped</option><option value="tf" ${inputType==='tf'?'selected':''}>TF2</option><option value="joints" ${inputType==='joints'?'selected':''}>JointState</option></select></div><div class="field" id="pose-topic-field" style="display:${inputType==='tf'?'none':''}">${topicField(t('field.inputTopic'),'pose-topic',c.pose_topic,inputType)}</div></div>
-<div class="form-row">${field(t('field.baseFrame'),'robot-base-frame',c.robot_base_frame||'')}${field(t('field.endFrame'),'robot-end-frame',c.robot_end_frame||'')}</div>
-<div class="form-row" id="joint-settings" style="display:${inputType==='joints'?'grid':'none'}">${field(t('field.jointDof'),'joint-dof',c.joint_dof,'number')}${field(t('field.jointNames'),'joint-names',c.joint_names||'')}</div>
-<div class="form-row">${field(t('field.captureTopic'),'capture-topic',c.capture_topic||'')}${field(t('field.statusTopic'),'status-topic',c.status_topic||'')}</div>
-<div class="help">${t('field.frameHelp')}</div>`,`<div class="actions">${ros.running?btn('stop-ros',t('action.disconnectRos'),'square'):btn('start-ros',t('action.connectRos'),'plug','primary')}</div>`,false)}
-<div class="callout">${icon('info')}<div><b>${t('connect.interfaceTitle')}</b><br>${t('connect.interfaceBody')}</div></div>
-</div></div></div>`}
-function topicField(label,id,value,kind){return `<div class="field"><label for="${id}">${label}</label><input class="control" id="${id}" list="topics-${kind}" value="${escapeHtml(value||'')}"/><datalist id="topics-${kind}">${topicOptions(kind)}</datalist></div>`}
+const TOPIC_TYPES={
+  image:'sensor_msgs/msg/Image',info:'sensor_msgs/msg/CameraInfo',
+  pose:'geometry_msgs/msg/PoseStamped',transform:'geometry_msgs/msg/TransformStamped',
+  joints:'sensor_msgs/msg/JointState',capture:'std_msgs/msg/Bool',status:'std_msgs/msg/String'
+}
+function availableTopics(kind){const type=TOPIC_TYPES[kind];return (state.discoveredTopics||[]).filter(v=>v.types?.includes(type)).map(v=>v.topic)}
+function topicField(label,id,value,kind,optional=false){
+  const topics=availableTopics(kind)
+  if(kind==='status'&&!topics.includes('/handeye/status'))topics.unshift('/handeye/status')
+  const missing=Boolean(value&&!topics.includes(value))
+  const options=[`<option value="">${t(optional?'connect.optionalTopic':'connect.chooseTopic')}</option>`]
+  if(missing)options.push(`<option value="${escapeHtml(value)}" disabled selected>${escapeHtml(value)} · ${t('connect.notDiscovered')}</option>`)
+  for(const topic of topics)options.push(`<option value="${escapeHtml(topic)}" ${topic===value?'selected':''}>${escapeHtml(topic)}</option>`)
+  const hint= !state.discoveredOnce?t('connect.searchFirst'):topics.length?`${topics.length} ${t('connect.topicCount')}`:t('connect.noMatchingTopics')
+  return `<div class="field"><label for="${id}">${label}</label><select class="control topic-select" id="${id}" data-kind="${kind}">${options.join('')}</select><div class="topic-hint" data-hint-for="${id}">${hint}</div></div>`
+}
+function cameraMetaText(){const c=state.data.camera||{},d=state.topicDetails.image||state.topicDetails.info||{};const frame=c.frame_id||d.frame_id||state.data.config.camera_frame||'—';const w=c.width||d.width,h=c.height||d.height;return `${t('field.cameraFrame')}: ${escapeHtml(frame)}${w&&h?` · ${w} × ${h}`:''}${c.camera_info_ready?' · CameraInfo ✓':''}`}
+function robotMetaText(){const p=state.data.ros?.pose||{},d=state.topicDetails.pose||{};const base=p.frame_id||d.frame_id||state.data.config.robot_base_frame||'—';const end=p.child_frame_id||d.child_frame_id||state.data.config.robot_end_frame||'—';return `${t('field.baseFrame')}: ${escapeHtml(base)} · ${t('field.endFrame')}: ${escapeHtml(end)}`}
+function renderConnect(){
+  const c=state.data.config,cam=state.data.camera||{},ros=state.data.ros||{}
+  const isRos=c.camera_source!=='v4l2',kind=c.ros_input_type||'pose'
+  const active=cam.open||ros.running,connected=cam.open&&ros.running
+  return `<div class="page">${pageHead(t('connect.kicker'),t('connect.title'),t('connect.desc'))}
+  <div class="grid three" style="margin-bottom:14px">
+    <div class="metric"><div class="metric-label">${t('connect.metricCamera')}</div><div class="metric-value" id="connect-camera-state" style="color:${cam.receiving?'var(--success)':'var(--text-secondary)'}">${cam.receiving?t('status.connected'):cam.open?t('status.waiting'):t('status.offline')}</div><div class="metric-meta">${escapeHtml(isRos?c.image_topic:t('connect.device',{index:c.camera_index,width:c.camera_width,height:c.camera_height}))}</div></div>
+    <div class="metric"><div class="metric-label">${t('connect.metricRobot')}</div><div class="metric-value" id="connect-robot-state" style="color:${ros.pose?'var(--success)':'var(--text-secondary)'}">${ros.pose?t('status.receiving'):ros.running?t('status.waiting'):t('status.offline')}</div><div class="metric-meta">${escapeHtml(kind==='tf'?(c.robot_base_frame+' → '+c.robot_end_frame):c.pose_topic)}</div></div>
+    <div class="metric"><div class="metric-label">${t('connect.metricOutput')}</div><div class="metric-value">${state.data.handeye?.count||0}<small>${t('connect.samples')}</small></div><div class="metric-meta">${escapeHtml(c.output_dir||t('connect.notConfigured'))}</div></div>
+  </div>
+  <div class="grid preview-layout">${preview()}<div class="stack">
+    ${card(t('connect.projectSettings'),t('connect.projectSettingsDesc'),'folder',`<div class="field"><label for="output-dir">${t('field.outputDir')}</label><div class="inline-control"><input class="control" id="output-dir" value="${escapeHtml(c.output_dir)}"/><button class="btn" id="browse-output">${icon('folder')}${t('action.browse')}</button></div></div>`)}
+    ${card(t('connect.robotInterface'),t('connect.robotInterfaceDesc'),'plug',`
+    <div class="interface-section"><div class="interface-section-title">${icon('camera')}<b>${t('connect.cameraInterface')}</b></div>
+      <div class="form-row"><div class="field full"><label for="camera-source">${t('field.cameraSource')}</label><select class="control" id="camera-source"><option value="ros" ${isRos?'selected':''}>ROS2 Image</option><option value="v4l2" ${!isRos?'selected':''}>V4L2 / USB</option></select></div></div>
+      <div class="form-row" id="camera-ros-fields" style="display:${isRos?'grid':'none'}">${topicField(t('field.imageTopic'),'image-topic',c.image_topic,'image')}${topicField('CameraInfo','camera-info-topic',c.camera_info_topic,'info',true)}</div>
+      <div class="form-row" id="camera-local-fields" style="display:${!isRos?'grid':'none'}">${field(t('field.cameraIndex'),'camera-index',c.camera_index,'number')}${field(t('field.width'),'camera-width',c.camera_width,'number')}${field(t('field.height'),'camera-height',c.camera_height,'number')}</div>
+      <div class="form-row"><div class="field full">${field(t('field.cameraFrame'),'camera-frame',c.camera_frame||'')}<div class="detected-meta" id="camera-detected">${cameraMetaText()}</div></div></div>
+    </div>
+    <div class="interface-section"><div class="interface-section-title">${icon('target')}<b>${t('connect.armInterface')}</b></div>
+      <div class="form-row"><div class="field"><label for="ros-input-type">${t('field.inputType')}</label><select class="control" id="ros-input-type"><option value="pose" ${kind==='pose'?'selected':''}>PoseStamped</option><option value="transform" ${kind==='transform'?'selected':''}>TransformStamped</option><option value="tf" ${kind==='tf'?'selected':''}>TF2</option><option value="joints" ${kind==='joints'?'selected':''}>JointState</option></select></div><div class="field" id="pose-topic-field" style="display:${kind==='tf'?'none':''}">${topicField(t('field.inputTopic'),'pose-topic',c.pose_topic,kind)}</div></div>
+      <div class="form-row">${field(t('field.baseFrame'),'robot-base-frame',c.robot_base_frame||'')}${field(t('field.endFrame'),'robot-end-frame',c.robot_end_frame||'')}</div>
+      <div class="detected-meta" id="robot-detected">${robotMetaText()}</div>
+      <div class="form-row" id="joint-settings" style="display:${kind==='joints'?'grid':'none'}">${field(t('field.jointDof'),'joint-dof',c.joint_dof,'number')}${field(t('field.jointNames'),'joint-names',c.joint_names||'')}</div>
+    </div>
+    <details class="interface-advanced"><summary>${t('connect.advanced')}</summary><div class="form-row">${topicField(t('field.captureTopic'),'capture-topic',c.capture_topic||'','capture',true)}${topicField(t('field.statusTopic'),'status-topic',c.status_topic||'','status',true)}</div><div class="help">${t('connect.statusIsOutput')}</div></details>
+    `,`<div class="actions connection-actions">${btn('discover-topics',t('action.discoverTopics'),'scan','')}${active?btn('disconnect-robot',t('action.disconnectRobot'),'square',''):btn('connect-robot',t('action.connectRobot'),'plug','primary')}</div><div class="connection-note" id="connection-message">${connected?t('connect.connectedHint'):t('connect.connectionHint')}</div>`,true)}
+  </div></div></div>`
+}
 
 function boardFields(){
   const c=state.data.config;const isCharuco=c.board_type==='charuco'
@@ -331,6 +364,70 @@ function bindSegment(id,key,onChange){
     onChange?.(b.dataset.value)
   })
 }
+function validateConnection(c){
+  if(!c.output_dir?.trim())return t('connect.needOutput')
+  if(c.camera_source==='ros'&&!c.image_topic)return t('connect.needImage')
+  if(c.ros_input_type!=='tf'&&!c.pose_topic)return t('connect.needPose')
+  if(c.ros_input_type==='pose'&&!c.robot_end_frame.trim())return t('connect.needEnd')
+  if(['tf','joints'].includes(c.ros_input_type)&&(!c.robot_base_frame.trim()||!c.robot_end_frame.trim()))return t('connect.needFrames')
+  const check=(value,kind)=>!value||availableTopics(kind).includes(value)
+  if(state.discoveredOnce){
+    if(c.camera_source==='ros'&&(!check(c.image_topic,'image')||!check(c.camera_info_topic,'info')))return t('connect.topicMissing')
+    if(c.ros_input_type!=='tf'&&!check(c.pose_topic,c.ros_input_type))return t('connect.topicMissing')
+    if(!check(c.capture_topic,'capture'))return t('connect.topicMissing')
+  }
+  return ''
+}
+function applyTopicDetails(kind,data){
+  state.topicDetails[kind]=data
+  const update=(id,value)=>{const input=$('#'+id);if(input&&value&&(!input.value.trim()||state.autoFilled.has(id))){input.value=value;state.autoFilled.add(id)}}
+  if(kind==='image'||kind==='info'){
+    update('camera-frame',data.frame_id)
+    const old=state.topicDetails.image||{}, info=state.topicDetails.info||{}
+    if(old.frame_id&&info.frame_id&&old.frame_id!==info.frame_id)toast(t('toast.operationFailed'),t('connect.cameraFrameMismatch'),'warning')
+    if(old.width&&info.width&&(old.width!==info.width||old.height!==info.height))toast(t('toast.operationFailed'),t('connect.cameraSizeMismatch'),'warning')
+  }
+  if(kind==='pose'||kind==='transform'){
+    update('robot-base-frame',data.frame_id)
+    if(kind==='transform')update('robot-end-frame',data.child_frame_id)
+  }
+  if(kind==='joints'){
+    update('robot-base-frame',data.frame_id)
+    if(data.joint_names?.length){update('joint-names',data.joint_names.join(','));const dof=$('#joint-dof');if(dof)dof.value=data.joint_names.length}
+  }
+  const camera=$('#camera-detected');if(camera)camera.innerHTML=cameraMetaText()
+  const robot=$('#robot-detected');if(robot)robot.innerHTML=robotMetaText()
+}
+function bindTopicSelect(el){
+  if(!el)return
+  el.addEventListener('change',async()=>{
+    const kind=el.dataset.kind,value=el.value
+    if(!value){delete state.topicDetails[kind];return}
+    if(kind==='image'){
+      delete state.topicDetails.image
+      delete state.topicDetails.info
+      // Use an existing matching CameraInfo publisher only, do not synthesize a topic
+      const guess=value.replace(/\/image(?:_raw)?$/, '/camera_info')
+      const info=$('#camera-info-topic')
+      if(info&&!info.value&&availableTopics('info').includes(guess)){
+        info.value=guess
+        void inspectSelection('info',guess)
+      }
+    }
+    await inspectSelection(kind,value)
+  })
+}
+async function inspectSelection(kind,value){
+  const messageType=TOPIC_TYPES[kind]
+  if(!value||!messageType)return
+  try{
+    const result=await api.request('inspect_topic',{topic:value,message_type:messageType})
+    if(result?.received&&result.metadata){
+      const id={image:'image-topic',info:'camera-info-topic',pose:'pose-topic',transform:'pose-topic',joints:'pose-topic',capture:'capture-topic'}[kind]
+      if($('#'+id)?.value===value)applyTopicDetails(kind,result.metadata)
+    }
+  }catch(e){toast(t('toast.operationFailed'),e.message||String(e),'warning')}
+}
 function bindPage(){
   $('#board-type')?.addEventListener('change',e=>{
     const charuco=e.target.value==='charuco'
@@ -340,14 +437,49 @@ function bindPage(){
   })
   bindSegment('intrinsic-quality','intrinsicQuality',updateIntrinsicQualityView);bindSegment('handeye-quality','handeyeQuality');bindSegment('sample-mode','sampleMode',updateSampleModeView);bindSegment('solve-mode','solveMode')
   $('#camera-source')?.addEventListener('change',e=>{const ros=e.target.value==='ros';$('#camera-ros-fields').style.display=ros?'grid':'none';$('#camera-local-fields').style.display=ros?'none':'grid'})
-  $('#ros-input-type')?.addEventListener('change',e=>{const mode=e.target.value;$('#pose-topic-field').style.display=mode==='tf'?'none':'';$('#joint-settings').style.display=mode==='joints'?'grid':'none'})
-  $('#discover-topics')?.addEventListener('click',async()=>{const result=await request('discover_topics');state.discoveredTopics=result.topics||[];for(const [id,kind] of [['image-topic','image'],['camera-info-topic','info'],['pose-topic',$('#ros-input-type')?.value||'pose']]){const input=$('#'+id);if(!input)continue;const list=input.list;if(list)list.innerHTML=topicOptions(kind);if(!input.value.trim()){const options=[...list.options];if(options.length===1)input.value=options[0].value}}toast(t('action.discoverTopics'),`${state.discoveredTopics.length}`,'success')})
+  $('#ros-input-type')?.addEventListener('change',e=>{
+    const mode=e.target.value
+    $('#pose-topic-field').style.display=mode==='tf'?'none':''
+    $('#joint-settings').style.display=mode==='joints'?'grid':'none'
+    const host=$('#pose-topic-field')
+    if(mode!=='tf'&&host){host.innerHTML=topicField(t('field.inputTopic'),'pose-topic','',mode);bindTopicSelect($('#pose-topic'))}
+  })
+  $$('.topic-select').forEach(bindTopicSelect)
+  for(const id of ['camera-frame','robot-base-frame','robot-end-frame','joint-names']){
+    $('#'+id)?.addEventListener('input',()=>state.autoFilled.delete(id))
+  }
+  $('#discover-topics')?.addEventListener('click',async()=>{
+    const button=$('#discover-topics');button.disabled=true
+    try{
+      // Keep in-progress edits, even when the user has not connected yet
+      const pending=configFromForm('connect')
+      const result=await request('discover_topics')
+      state.discoveredTopics=result.topics||[]
+      state.discoveredOnce=true
+      state.data.config={...state.data.config,...pending}
+      renderPage(false)
+      toast(t('action.discoverTopics'),`${state.discoveredTopics.length} ${t('connect.topicCount')}`,'success')
+    }finally{if($('#discover-topics'))$('#discover-topics').disabled=false}
+  })
   $('#browse-output')?.addEventListener('click',async()=>{const p=await api?.selectDirectory($('#output-dir').value);if(p)$('#output-dir').value=p})
-  $('#save-connect')?.addEventListener('click',()=>saveConfig('connect'))
-  $('#open-camera')?.addEventListener('click',async()=>{await saveConfig('connect');await request('open_camera',{},t('toast.cameraOpened'));await refreshState()})
-  $('#close-camera')?.addEventListener('click',async()=>{await request('close_camera',{},t('toast.cameraClosed'));await refreshState()})
-  $('#start-ros')?.addEventListener('click',async()=>{await saveConfig('connect');const c=state.data.config;await request('start_ros',{input_type:c.ros_input_type,input_topic:c.pose_topic,capture_topic:c.capture_topic,status_topic:c.status_topic,joint_dof:c.joint_dof,joint_names:c.joint_names},t('toast.rosConnected'));await refreshState()})
-  $('#stop-ros')?.addEventListener('click',async()=>{await request('stop_ros',{},t('toast.rosDisconnected'));await refreshState()})
+  $('#connect-robot')?.addEventListener('click',async()=>{
+    const config=configFromForm('connect')
+    const error=validateConnection(config)
+    if(error){toast(t('toast.operationFailed'),error,'danger');return}
+    const button=$('#connect-robot');button.disabled=true
+    try{
+      const saved=await request('set_config',config)
+      state.data=saved
+      await request('connect_robot')
+      await refreshState()
+      toast(t('action.connectRobot'),t('connect.waitingForData'),'success')
+    }finally{if($('#connect-robot'))$('#connect-robot').disabled=false}
+  })
+  $('#disconnect-robot')?.addEventListener('click',async()=>{
+    await request('disconnect_robot',{},t('action.disconnectRobot'))
+    state.preview=''
+    await refreshState()
+  })
   $('#import-camera-info')?.addEventListener('click',async()=>{const r=await request('import_camera_info',{},t('toast.settingsSaved'));toast(t('intrinsics.saved'),r.path,'success');await refreshState()})
   $('#import-intrinsics')?.addEventListener('click',async()=>{const path=await api?.selectIntrinsics?.();if(!path)return;const r=await request('import_intrinsics',{path},t('toast.settingsSaved'));toast(t('intrinsics.saved'),r.path,'success');await refreshState()})
   $('#copy-matrix')?.addEventListener('click',async()=>{const r=state.solveResult;if(!r)return;const content=`${r.parent_frame} -> ${r.child_frame}\n${r.transform_matrix.map(row=>row.map(v=>Number(v).toFixed(8)).join('  ')).join('\n')}`;await navigator.clipboard.writeText(content);toast(t('action.copyMatrix'),'','success')})
@@ -380,12 +512,12 @@ function backendStateLabel(value){
   if(value==='unavailable')return t('status.backendUnavailable')
   return t('status.backendState',{state:value})
 }
-function updateShell(){const cam=state.data.camera||{},ros=state.data.ros||{};const p=$('#camera-pill');if(p)p.innerHTML=`${dot(cam.open?'success':'warning')} ${t('status.camera')} ${cam.open?t('status.live'):t('status.offline')}`;const r=$('#ros-pill');if(r)r.innerHTML=`${dot(ros.running?'success':'warning')} ROS2 ${ros.running?t('status.rosConnected'):t('status.rosOffline')}`;const b=$('#board-pill');if(b)b.innerHTML=`${dot(cam.board_found?'success':'warning')} ${t('status.board')} ${cam.board_found?t('status.detected'):'—'}`;const rl=$('#runtime-label');if(rl){rl.textContent=backendStateLabel(state.backend);rl.previousElementSibling?.classList.toggle('success',state.backend==='ready')}const rs=$('#ros-sidebar');if(rs)rs.textContent=state.runtime?.rosSetup?`ROS · ${state.runtime.rosSetup.split('/').slice(-2,-1)[0]}`:t('status.rosNotDetected')}
+function updateShell(){const cam=state.data.camera||{},ros=state.data.ros||{};const p=$('#camera-pill');if(p)p.innerHTML=`${dot(cam.receiving?'success':'warning')} ${t('status.camera')} ${cam.receiving?t('status.live'):cam.open?t('status.waiting'):t('status.offline')}`;const r=$('#ros-pill');if(r)r.innerHTML=`${dot(ros.running?'success':'warning')} ROS2 ${ros.running?t('status.rosConnected'):t('status.rosOffline')}`;const cstat=$('#connect-camera-state');if(cstat){cstat.textContent=cam.receiving?t('status.connected'):cam.open?t('status.waiting'):t('status.offline');cstat.style.color=cam.receiving?'var(--success)':'var(--text-secondary)'}const rstat=$('#connect-robot-state');if(rstat){rstat.textContent=ros.pose?t('status.receiving'):ros.running?t('status.waiting'):t('status.offline');rstat.style.color=ros.pose?'var(--success)':'var(--text-secondary)'}const pl=$('#preview-live-pill');if(pl)pl.innerHTML=`${dot(cam.receiving?'success':'warning')} ${cam.receiving?t('status.live'):cam.open?t('status.waiting'):t('status.offline')}`;const cm=$('#camera-detected');if(cm)cm.innerHTML=cameraMetaText();const rm=$('#robot-detected');if(rm)rm.innerHTML=robotMetaText();const b=$('#board-pill');if(b)b.innerHTML=`${dot(cam.board_found?'success':'warning')} ${t('status.board')} ${cam.board_found?t('status.detected'):'—'}`;const rl=$('#runtime-label');if(rl){rl.textContent=backendStateLabel(state.backend);rl.previousElementSibling?.classList.toggle('success',state.backend==='ready')}const rs=$('#ros-sidebar');if(rs)rs.textContent=state.runtime?.rosSetup?`ROS · ${state.runtime.rosSetup.split('/').slice(-2,-1)[0]}`:t('status.rosNotDetected')}
 let pendingPreview=null
 let previewRaf=0
 function updatePreviewFrame(data){
   state.preview=data.jpeg||''
-  state.data.camera={...(state.data.camera||{}),open:true,board_found:Boolean(data.board_found),width:data.width,height:data.height}
+  state.data.camera={...(state.data.camera||{}),open:true,receiving:true,board_found:Boolean(data.board_found),width:data.width,height:data.height}
   updateShell()
   pendingPreview=data
   if(previewRaf)return
@@ -409,7 +541,7 @@ function updatePreviewFrame(data){
   })
 }
 
-function updatePoseView(data){state.data.ros={...(state.data.ros||{}),running:true,pose:data};const pose=$('#pose-live');if(pose)pose.textContent=poseText();updateShell()}
+function updatePoseView(data){state.data.ros={...(state.data.ros||{}),running:true,pose:data};const pose=$('#pose-live');if(pose)pose.textContent=poseText();if(state.page==='connect'){applyTopicDetails('pose',{frame_id:data.frame_id,child_frame_id:data.child_frame_id})}updateShell()}
 function updateRuntimeView(){const rt=state.runtime||{};const installed=Boolean(rt.runtimeInstalled);const label=$('#runtime-health-label');if(label)label.textContent=installed?t('runtime.ready'):t('runtime.notInstalled');const pathEl=$('#runtime-health-path');if(pathEl)pathEl.textContent=rt.runtimePython||'~/.local/share/handeye-calibration/.venv/bin/python';const info=$('#runtime-info-box');if(info)info.textContent=`Ubuntu : ${rt.ubuntu||t('common.unknown')}
 ROS    : ${rt.rosDistro||t('common.notDetected')}
 Setup  : ${rt.rosSetup||t('common.notDetected')}
@@ -417,7 +549,7 @@ Python : ${rt.python||t('common.unknown')}
 Interface: HandEye`;const log=$('#runtime-install-log');if(log){log.textContent=state.runtimeInstallLog.slice(-5000);log.classList.toggle('hidden',!state.runtimeInstallLog)}const install=$('#install-runtime');if(install)install.disabled=state.runtimeInstallState==='running';const installLabel=$('#install-runtime-label');if(installLabel)installLabel.textContent=state.runtimeInstallState==='running'?t('runtime.installing'):installed?t('runtime.repair'):t('runtime.install')}
 function appendBackendLog(text){state.logs+=text||'';const log=$('#log-box');if(log){log.textContent=state.logs;log.scrollTop=log.scrollHeight}}
 async function refreshState(){if(!api)return;try{state.data=await api.request('get_state');updateShell();renderPage(false)}catch(e){state.backend='error';updateShell()}}
-function handleEvent(msg){const {event,data}=msg;if(event==='state'){state.data=data;updateShell()}else if(event==='preview'){updatePreviewFrame(data)}else if(event==='pose'){updatePoseView(data)}else if(event==='log'){appendBackendLog(data.text||'')}else if(event==='error'){toast('Backend',data?.message||t('error.unknown'),'danger')}else if(event==='tool_done'){if(data?.name==='solve')state.solveResult=data.ok?data.result||null:null}}
+function handleEvent(msg){const {event,data}=msg;if(event==='state'){state.data=data;updateShell()}else if(event==='preview'){updatePreviewFrame(data)}else if(event==='pose'){updatePoseView(data)}else if(event==='log'){appendBackendLog(data.text||'')}else if(event==='error'){toast('Backend',data?.message||t('error.unknown'),'danger')}else if(event==='camera_metadata'){state.data.camera={...(state.data.camera||{}),frame_id:data?.frame_id||state.data.camera?.frame_id,width:data?.width||state.data.camera?.width,height:data?.height||state.data.camera?.height};if(state.page==='connect')applyTopicDetails('image',data)}else if(event==='tool_done'){if(data?.name==='solve')state.solveResult=data.ok?data.result||null:null}}
 
 async function boot(){document.documentElement.lang=state.language;shell();applyTheme(state.theme);renderPage(false);syncResponsiveShell();if(!responsiveListenerBound){responsiveListenerBound=true;window.addEventListener('resize',syncResponsiveShell,{passive:true})}if(!api){state.backend='unavailable';updateShell();toast(t('toast.bridgeMissing'),t('toast.startApp'),'warning');return}api.onEvent?.(handleEvent);api.onRuntime?.(m=>{state.backend=m.state||'unknown';state.runtime={...(state.runtime||{}),...m};updateShell();updateRuntimeView()});api.onRuntimeInstall?.(m=>{if(m.state==='starting')state.runtimeInstallState='running';if(m.state==='log')state.runtimeInstallLog+=(m.text||'');if(m.state==='done')state.runtimeInstallState='done';if(m.state==='error')state.runtimeInstallState='error';updateRuntimeView()});api.onStderr?.(t=>appendBackendLog('[backend] '+t));try{state.runtime=await api.runtimeInfo();const ping=await api.request('ping');state.backend=ping.pong?'ready':'error';state.data=await api.request('get_state')}catch(e){state.backend='error';toast(t('toast.backendStartFailed'),e.message,'danger')}updateShell();renderPage(false)}
 boot()
