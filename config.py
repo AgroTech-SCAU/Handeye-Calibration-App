@@ -38,7 +38,7 @@ class AppConfig:
     charuco_dictionary: str = "DICT_5X5_100"
     charuco_min_corners: int = 6
     charuco_legacy_pattern: bool = False
-    ros_input_type: str = "pose"
+    ros_input_type: str = "transform"
     robot_base_frame: str = ""
     robot_end_frame: str = ""
     camera_frame: str = ""

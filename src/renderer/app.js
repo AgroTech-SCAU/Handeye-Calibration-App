@@ -37,13 +37,13 @@ const initialLanguage = i18n?.loadLanguage?.() || 'en'
 
 const state = {
   page:'connect', theme:localStorage.getItem('handeye-theme') || 'dark', language:initialLanguage, backend:'starting', runtime:null,
-  data:{ config:{output_dir:'',camera_source:'ros',image_topic:'',camera_info_topic:'',camera_frame:'',robot_base_frame:'',robot_end_frame:'',camera_index:0,camera_width:640,camera_height:480,chessboard_cols:11,chessboard_rows:8,square_size_mm:15,board_type:'chessboard',charuco_squares_x:14,charuco_squares_y:9,charuco_marker_size_mm:15,charuco_dictionary:'DICT_5X5_100',charuco_min_corners:6,charuco_legacy_pattern:false,ros_input_type:'pose',pose_topic:'',joint_dof:5,joint_names:'',capture_topic:'',status_topic:'/handeye/status'}, camera:{open:false,board_found:false,width:640,height:480}, ros:{running:false,pose:null}, intrinsics:{count:0,exists:false}, handeye:{count:0,samples_exists:false}, output_dir:'' },
-  discoveredTopics:[], discoveredOnce:false, topicDetails:{}, autoFilled:new Set(), inspectingTopic:false, preview:'', logs:'', intrinsicQuality:'standard', handeyeQuality:'standard', sampleMode:'auto', manualType:'quaternion', angleUnit:'deg', solveMode:'robust',
+  data:{ config:{output_dir:'',camera_source:'ros',image_topic:'',camera_info_topic:'',camera_frame:'',robot_base_frame:'',robot_end_frame:'',camera_index:0,camera_width:640,camera_height:480,chessboard_cols:11,chessboard_rows:8,square_size_mm:15,board_type:'chessboard',charuco_squares_x:14,charuco_squares_y:9,charuco_marker_size_mm:15,charuco_dictionary:'DICT_5X5_100',charuco_min_corners:6,charuco_legacy_pattern:false,ros_input_type:'transform',pose_topic:'',joint_dof:5,joint_names:'',capture_topic:'',status_topic:'/handeye/status'}, camera:{open:false,board_found:false,width:640,height:480}, ros:{running:false,pose:null}, intrinsics:{count:0,exists:false}, handeye:{count:0,samples_exists:false}, output_dir:'' },
+  arucoDictionaries:[], discoveredTopics:[], discoveredOnce:false, topicDetails:{}, autoFilled:new Set(), inspectingTopic:false, preview:'', logs:'', intrinsicQuality:'standard', handeyeQuality:'standard', sampleMode:'auto', manualType:'quaternion', angleUnit:'deg', solveMode:'robust',
   intrinsicResult:null, solveResult:null, runtimeInstallLog:'', runtimeInstallState:'idle'
 }
 
 function createMockApi() {
-  let mock = JSON.parse(JSON.stringify(state.data)); mock.mock=true
+  let mock = JSON.parse(JSON.stringify(state.data)); mock.mock=true; mock.aruco_dictionaries=ARUCO_DICTIONARIES
   const listeners=[]; const runtime=[]
   function emit(event,data){ listeners.forEach(fn=>fn({kind:'event',event,data})) }
   setTimeout(()=>runtime.forEach(fn=>fn({state:'ready',python:'sandbox-mock',rosSetup:'/opt/ros/humble/setup.bash'})),100)
@@ -51,6 +51,7 @@ function createMockApi() {
     request: async (method,params={}) => {
       if(method==='get_state'||method==='ping') return method==='ping'?{pong:true,mock:true}:mock
       if(method==='set_config'){ Object.assign(mock.config,params); mock.output_dir=mock.config.output_dir; emit('state',mock); return mock }
+      if(method==='update_board'){ const {reset_captures,...board}=params;Object.assign(mock.config,board);if(reset_captures){mock.intrinsics.count=0;mock.handeye.count=0}emit('state',mock);return mock }
       if(method==='discover_topics')return {topics:[]};
       if(method==='inspect_topic')return {received:false,metadata:{}};
       if(method==='connect_robot'){mock.ros.running=true;mock.ros.pose={values:[.412,-.083,.536,.012,.713,.008,.701],frame_id:mock.config.robot_base_frame||'base_link',child_frame_id:mock.config.robot_end_frame||'tool0',timestamp:Date.now()/1000};mock.camera.open=true;mock.camera.receiving=true;emit('pose',mock.ros.pose);emit('state',mock);return mock}
@@ -208,10 +209,10 @@ function topicField(label,id,value,kind,optional=false){
   return `<div class="field"><label for="${id}">${label}</label><select class="control topic-select" id="${id}" data-kind="${kind}">${options.join('')}</select><div class="topic-hint" data-hint-for="${id}">${hint}</div></div>`
 }
 function cameraMetaText(){const c=state.data.camera||{},d=state.topicDetails.image||state.topicDetails.info||{};const frame=c.frame_id||d.frame_id||state.data.config.camera_frame||'—';const w=c.width||d.width,h=c.height||d.height;return `${t('field.cameraFrame')}: ${escapeHtml(frame)}${w&&h?` · ${w} × ${h}`:''}${c.camera_info_ready?' · CameraInfo ✓':''}`}
-function robotMetaText(){const p=state.data.ros?.pose||{},d=state.topicDetails.pose||{};const base=p.frame_id||d.frame_id||state.data.config.robot_base_frame||'—';const end=p.child_frame_id||d.child_frame_id||state.data.config.robot_end_frame||'—';return `${t('field.baseFrame')}: ${escapeHtml(base)} · ${t('field.endFrame')}: ${escapeHtml(end)}`}
+function robotMetaText(){const p=state.data.ros?.pose||{},kind=state.data.config.ros_input_type,d=state.topicDetails[kind==='transform'?'transform':'pose']||{};const base=p.frame_id||d.frame_id||(kind==='transform'?'':state.data.config.robot_base_frame)||'—';const end=p.child_frame_id||d.child_frame_id||(kind==='transform'?'':state.data.config.robot_end_frame)||'—';return `${t('field.baseFrame')}: ${escapeHtml(base)} · ${t('field.endFrame')}: ${escapeHtml(end)}`}
 function renderConnect(){
   const c=state.data.config,cam=state.data.camera||{},ros=state.data.ros||{}
-  const isRos=c.camera_source!=='v4l2',kind=c.ros_input_type||'pose'
+  const isRos=c.camera_source!=='v4l2',kind=c.ros_input_type||'transform'
   const active=cam.open||ros.running,connected=cam.open&&ros.running
   return `<div class="page">${pageHead(t('connect.kicker'),t('connect.title'),t('connect.desc'))}
   <div class="grid three" style="margin-bottom:14px">
@@ -230,7 +231,9 @@ function renderConnect(){
     </div>
     <div class="interface-section"><div class="interface-section-title">${icon('target')}<b>${t('connect.armInterface')}</b></div>
       <div class="form-row"><div class="field"><label for="ros-input-type">${t('field.inputType')}</label><select class="control" id="ros-input-type"><option value="pose" ${kind==='pose'?'selected':''}>PoseStamped</option><option value="transform" ${kind==='transform'?'selected':''}>TransformStamped</option><option value="tf" ${kind==='tf'?'selected':''}>TF2</option><option value="joints" ${kind==='joints'?'selected':''}>JointState</option></select></div><div class="field" id="pose-topic-field" style="display:${kind==='tf'?'none':''}">${topicField(t('field.inputTopic'),'pose-topic',c.pose_topic,kind)}</div></div>
-      <div class="form-row">${field(t('field.baseFrame'),'robot-base-frame',c.robot_base_frame||'')}${field(t('field.endFrame'),'robot-end-frame',c.robot_end_frame||'')}</div>
+      <div class="form-row" id="robot-frame-fields">${kind==='transform'?
+        `<div class="field"><label for="robot-base-frame">${t('field.baseFrame')} · ${t('connect.fromTransform')}</label><input class="control" id="robot-base-frame" readonly placeholder="${t('connect.waitingTransform')}" value="${escapeHtml(ros.pose?.frame_id||state.topicDetails.transform?.frame_id||'')}"/></div><div class="field"><label for="robot-end-frame">${t('field.endFrame')} · ${t('connect.fromTransform')}</label><input class="control" id="robot-end-frame" readonly placeholder="${t('connect.waitingTransform')}" value="${escapeHtml(ros.pose?.child_frame_id||state.topicDetails.transform?.child_frame_id||'')}"/></div>`:
+        `${field(t('field.baseFrame'),'robot-base-frame',c.robot_base_frame||'')}${field(t('field.endFrame'),'robot-end-frame',c.robot_end_frame||'')}`}</div>
       <div class="detected-meta" id="robot-detected">${robotMetaText()}</div>
       <div class="form-row" id="joint-settings" style="display:${kind==='joints'?'grid':'none'}">${field(t('field.jointDof'),'joint-dof',c.joint_dof,'number')}${field(t('field.jointNames'),'joint-names',c.joint_names||'')}</div>
     </div>
@@ -239,18 +242,30 @@ function renderConnect(){
   </div></div></div>`
 }
 
+const ARUCO_DICTIONARIES=[
+  ...['4X4','5X5','6X6','7X7'].flatMap(series=>['50','100','250','1000'].map(size=>`DICT_${series}_${size}`)),
+  'DICT_ARUCO_ORIGINAL','DICT_APRILTAG_16h5','DICT_APRILTAG_25h9','DICT_APRILTAG_36h10','DICT_APRILTAG_36h11'
+]
+const BOARD_KEYS=['board_type','chessboard_cols','chessboard_rows','square_size_mm','charuco_squares_x','charuco_squares_y','charuco_marker_size_mm','charuco_dictionary','charuco_min_corners','charuco_legacy_pattern']
+function arucoDictionaryField(value){
+  const known=state.data.aruco_dictionaries||ARUCO_DICTIONARIES
+  const options=known.includes(value)?known:[value,...known]
+  return `<div class="field"><label for="charuco-dictionary">${t('board.dictionary')}</label><select class="control" id="charuco-dictionary">${options.map(name=>`<option value="${escapeHtml(name)}" ${name===value?'selected':''}>${escapeHtml(name)}</option>`).join('')}</select></div>`
+}
+function boardSummary(){const c=state.data.config||{};const shape=c.board_type==='charuco'?`${c.charuco_squares_x} × ${c.charuco_squares_y}`:`${c.chessboard_cols} × ${c.chessboard_rows}`;return `${c.board_type==='charuco'?'CharUco':t('board.chessboard')} · ${shape} · ${c.square_size_mm} mm`}
+function boardEditor(){return `<details class="board-inline-editor"><summary><span class="board-inline-label">${icon('scan')}<strong>${t('intrinsics.boardTitle')}</strong></span><span class="board-inline-summary">${escapeHtml(boardSummary())}</span></summary><div class="board-inline-content">${boardFields()}<div class="actions" style="margin-top:12px">${btn('save-board',t('intrinsics.saveBoard'),'refresh-cw','primary')}</div></div></details>`}
 function boardFields(){
   const c=state.data.config;const isCharuco=c.board_type==='charuco'
   return `<div class="form-row"><div class="field"><label for="board-type">${t('board.type')}</label><select class="control" id="board-type"><option value="chessboard" ${!isCharuco?'selected':''}>${t('board.chessboard')}</option><option value="charuco" ${isCharuco?'selected':''}>CharUco</option></select></div>${field(t('board.square'),'square-mm',c.square_size_mm,'number')}</div>
   <div class="form-row" id="board-chess-fields" style="display:${isCharuco?'none':'grid'}">${field(t('board.cols'),'board-cols',c.chessboard_cols,'number')}${field(t('board.rows'),'board-rows',c.chessboard_rows,'number')}</div>
-  <div id="board-charuco-fields" style="display:${isCharuco?'block':'none'}"><div class="form-row three">${field(t('board.squaresX'),'charuco-x',c.charuco_squares_x??14,'number')}${field(t('board.squaresY'),'charuco-y',c.charuco_squares_y??9,'number')}${field(t('board.marker'),'charuco-marker',c.charuco_marker_size_mm??15,'number')}</div><div class="form-row">${field(t('board.dictionary'),'charuco-dictionary',c.charuco_dictionary??'DICT_5X5_100')}${field(t('board.minCorners'),'charuco-min',c.charuco_min_corners??6,'number')}</div><div class="field"><label><input id="charuco-legacy" type="checkbox" ${c.charuco_legacy_pattern?'checked':''}> ${t('board.patternCompat')}</label></div></div><div class="help">${t('board.sessionHelp')}</div>`
+  <div id="board-charuco-fields" style="display:${isCharuco?'block':'none'}"><div class="form-row three">${field(t('board.squaresX'),'charuco-x',c.charuco_squares_x??14,'number')}${field(t('board.squaresY'),'charuco-y',c.charuco_squares_y??9,'number')}${field(t('board.marker'),'charuco-marker',c.charuco_marker_size_mm??15,'number')}</div><div class="form-row">${arucoDictionaryField(c.charuco_dictionary??'DICT_5X5_100')}${field(t('board.minCorners'),'charuco-min',c.charuco_min_corners??6,'number')}</div><div class="field"><label><input id="charuco-legacy" type="checkbox" ${c.charuco_legacy_pattern?'checked':''}> ${t('board.patternCompat')}</label></div></div><div class="help">${t('board.sessionHelp')}</div>`
 }
 function segmentedControl(id,current,options,extraClass='amber'){
   return `<div class="segmented ${extraClass}" id="${id}"><span class="segmented-indicator" aria-hidden="true"></span>${options.map(([value,label])=>`<button data-value="${value}" class="${current===value?'active':''}">${label}</button>`).join('')}</div>`
 }
 function qualitySegment(id,current){return segmentedControl(id,current,[['standard',t('quality.standard')],['strict',t('quality.strict')],['minimal',t('quality.minimal')]])}
 function renderIntrinsics(){const x=state.data.intrinsics||{},cam=state.data.camera;const target=state.intrinsicQuality==='strict'?15:state.intrinsicQuality==='minimal'?3:10;const pct=Math.min(100,(x.count||0)/target*100);return `<div class="page">${pageHead(t('intrinsics.kicker'),t('intrinsics.title'),t('intrinsics.desc'),btn('go-handeye',t('intrinsics.next'),'chevron'))}
-<div class="grid preview-layout">${preview()}<div class="stack">${card(t('intrinsics.boardTitle'),t('intrinsics.boardDesc'),'scan',boardFields(),`${btn('save-board',t('intrinsics.saveBoard'),'save')}`)}
+<div class="grid preview-layout">${preview()}<div class="stack">${card(t('intrinsics.boardTitle'),t('intrinsics.boardDesc'),'scan',boardFields(),`${btn('save-board',t('intrinsics.saveBoard'),'refresh-cw','primary')}`)}
 ${card(t('intrinsics.captureTitle'),t('intrinsics.captureDesc'),'camera',`<div class="progress-label"><span>${t('intrinsics.captured',{count:x.count||0})}</span><span id="intrinsic-target">${t('intrinsics.minimum',{count:target})}</span></div><div class="progress-track"><div class="progress-bar" id="intrinsic-progress" style="width:${pct}%"></div></div><div style="margin-top:14px"><div class="field"><label>${t('intrinsics.quality')}</label>${qualitySegment('intrinsic-quality',state.intrinsicQuality)}</div></div><div class="grid two" style="margin-top:13px"><div class="metric"><div class="metric-label">${t('intrinsics.chessboard')}</div><div class="metric-value" id="board-live" style="font-size:17.25px;color:${cam.board_found?'var(--success)':'var(--warning)'}">${cam.board_found?t('status.detected'):t('status.notDetected')}</div></div><div class="metric"><div class="metric-label">${t('intrinsics.file')}</div><div class="metric-value" style="font-size:17.25px;color:${x.exists?'var(--success)':'var(--text-secondary)'}">${x.exists?t('status.ready'):t('status.pending')}</div></div></div>`,`<div class="actions">${btn('capture-intrinsic',t('intrinsics.capture'),'camera','primary large',cam.open?'':'disabled')}${btn('solve-intrinsic',t('intrinsics.solveSave'),'flask','',x.count>=target?'':'disabled')}${btn('clear-intrinsic',t('action.clear'),'trash','danger')}${btn('import-camera-info',t('action.useCameraInfo'),'plug')}${btn('import-intrinsics',t('action.importIntrinsics'),'folder')}</div>`,true)}
 ${state.intrinsicResult?`<div class="callout">${icon('check')}<div><b>${t('intrinsics.saved')}</b><br>RMS ${n(state.intrinsicResult.reprojection_error_px,4)} px · Median ${n(state.intrinsicResult.reprojection_error_median_px,4)} px · Max ${n(state.intrinsicResult.reprojection_error_max_px,4)} px</div></div>`:''}</div></div></div>`}
 
@@ -259,6 +274,7 @@ function manualFields(){let labels=state.manualType==='quaternion'?['x','y','z',
 function manualInputPanel(){return `<div class="manual-input-panel ${state.sampleMode==='manual'?'open':''}" id="manual-input-panel"><div class="manual-input-inner"><div class="divider"></div><div class="form-row"><div class="field"><label>${t('manual.type')}</label><select class="control" id="manual-type"><option value="quaternion" ${state.manualType==='quaternion'?'selected':''}>${t('manual.poseQuaternion')}</option><option value="rpy" ${state.manualType==='rpy'?'selected':''}>${t('manual.poseRpy')}</option><option value="joints" ${state.manualType==='joints'?'selected':''}>${t('manual.jointAngles')}</option></select></div><div class="field"><label>${t('manual.angleUnit')}</label><select class="control" id="angle-unit"><option value="deg" ${state.angleUnit==='deg'?'selected':''}>deg</option><option value="rad" ${state.angleUnit==='rad'?'selected':''}>rad</option></select></div></div><div id="manual-fields" style="margin-top:11px">${manualFields()}</div></div></div>`}
 function renderHandeye(){const h=state.data.handeye||{},ros=state.data.ros||{};const target=20,pct=Math.min(100,(h.count||0)/target*100);return `<div class="page">${pageHead(t('handeye.kicker'),t('handeye.title'),t('handeye.desc'),btn('go-solve',t('handeye.next'),'chevron'))}
 <div class="grid preview-layout">${preview()}<div class="stack">${card(t('handeye.robotPose'),ros.running?t('handeye.robotAutoReceiving'):t('handeye.robotChooseSource'),'target',`<div class="pose-box" id="pose-live">${escapeHtml(poseText())}</div><div style="margin-top:12px"><div class="field"><label>${t('handeye.source')}</label>${segmentedControl('sample-mode',state.sampleMode,[['auto',t('handeye.auto')],['manual',t('handeye.manual')]])}</div></div>${manualInputPanel()}`)}
+${boardEditor()}
 ${card(t('handeye.collectionTitle'),t('handeye.collectionDesc'),'scan',`<div class="progress-label"><span>${t('handeye.captured',{count:h.count||0})}</span><span>${t('handeye.recommended',{count:target})}</span></div><div class="progress-track"><div class="progress-bar" style="width:${pct}%"></div></div><div style="margin-top:14px"><div class="field"><label>${t('intrinsics.quality')}</label>${qualitySegment('handeye-quality',state.handeyeQuality)}</div></div><div class="grid three" style="margin-top:13px"><div class="metric"><div class="metric-label">${t('handeye.samples')}</div><div class="metric-value">${h.count||0}</div></div><div class="metric"><div class="metric-label">${t('handeye.camera')}</div><div class="metric-value" style="font-size:16.1px;color:${state.data.camera?.open?'var(--success)':'var(--warning)'}">${state.data.camera?.open?t('status.ready'):t('status.offline')}</div></div><div class="metric"><div class="metric-label">${t('handeye.robot')}</div><div class="metric-value" id="robot-source-status" style="font-size:16.1px;color:${state.sampleMode==='manual'||ros.pose?'var(--success)':'var(--warning)'}">${state.sampleMode==='manual'?t('status.manual'):ros.pose?t('status.ready'):t('status.waiting')}</div></div></div>`,`<div class="actions">${btn('capture-handeye',t('handeye.capture'),'target','primary large')}${btn('save-samples',t('handeye.save'),'save')}${btn('clear-samples',t('action.clear'),'trash','danger')}</div>`,true)}</div></div></div>`}
 
 function matrixHtml(result){const m=result?.transform_matrix;if(!Array.isArray(m)||m.length!==4)return `<div class="pose-box">${t('solve.waitingResult')}</div>`;return `<div class="result-matrix">${m.flat().map(v=>`<span>${n(v,6)}</span>`).join('')}</div>`}
@@ -305,6 +321,7 @@ function configFromForm(scope='connect'){
   const c={...state.data.config};
   if(scope==='connect'){
     c.output_dir=$('#output-dir')?.value??c.output_dir;c.camera_source=$('#camera-source')?.value??c.camera_source;c.image_topic=$('#image-topic')?.value??c.image_topic;c.camera_info_topic=$('#camera-info-topic')?.value??c.camera_info_topic;c.camera_frame=$('#camera-frame')?.value??c.camera_frame;c.robot_base_frame=$('#robot-base-frame')?.value??c.robot_base_frame;c.robot_end_frame=$('#robot-end-frame')?.value??c.robot_end_frame;c.camera_index=Number($('#camera-index')?.value??c.camera_index);c.camera_width=Number($('#camera-width')?.value??c.camera_width);c.camera_height=Number($('#camera-height')?.value??c.camera_height);c.ros_input_type=$('#ros-input-type')?.value??c.ros_input_type;c.pose_topic=$('#pose-topic')?.value??c.pose_topic;c.joint_dof=Number($('#joint-dof')?.value??c.joint_dof);c.joint_names=$('#joint-names')?.value??c.joint_names;c.capture_topic=$('#capture-topic')?.value??c.capture_topic;c.status_topic=$('#status-topic')?.value??c.status_topic
+    if(c.ros_input_type==='transform'){c.robot_base_frame='';c.robot_end_frame=''}
   }
   if(scope==='board'){
     c.board_type=$('#board-type')?.value??c.board_type;c.chessboard_cols=Number($('#board-cols')?.value??c.chessboard_cols);c.chessboard_rows=Number($('#board-rows')?.value??c.chessboard_rows);c.square_size_mm=Number($('#square-mm')?.value??c.square_size_mm)
@@ -317,6 +334,27 @@ async function request(method,params={},okMessage=''){
   try{const r=await api.request(method,params);if(okMessage)toast(okMessage,'','success');return r}catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger');throw e}
 }
 async function saveConfig(scope='connect'){const r=await request('set_config',configFromForm(scope),t('toast.settingsSaved'));state.data=r;renderPage()}
+async function updateBoardSettings(){
+  const current=state.data.config||{}
+  const fromForm=configFromForm('board')
+  const changes=Object.fromEntries(BOARD_KEYS.filter(key=>fromForm[key]!==current[key]).map(key=>[key,fromForm[key]]))
+  if(!Object.keys(changes).length){toast(t('board.unchanged'),'','success');return}
+  const captured=(Number(state.data.intrinsics?.count)||0)+(Number(state.data.handeye?.count)||0)
+  if(captured){
+    if(!window.confirm(t('board.confirmClear',{count:captured})))return
+    changes.reset_captures=true
+  }
+  const button=$('#save-board')
+  if(button)button.disabled=true
+  try{
+    const result=await request('update_board',changes,t('toast.boardUpdated'))
+    state.data=result
+    state.intrinsicResult=null
+    state.solveResult=null
+    renderPage(false)
+  }finally{if($('#save-board'))$('#save-board').disabled=false}
+}
+
 function syncSegmentIndicator(el,animate=true){
   if(!el)return
   const indicator=$('.segmented-indicator',el)
@@ -389,7 +427,11 @@ function applyTopicDetails(kind,data){
   }
   if(kind==='pose'||kind==='transform'){
     update('robot-base-frame',data.frame_id)
-    if(kind==='transform')update('robot-end-frame',data.child_frame_id)
+    if(kind==='transform'){
+      const base=$('#robot-base-frame'),end=$('#robot-end-frame')
+      if(base)base.value=data.frame_id||''
+      if(end)end.value=data.child_frame_id||''
+    }
   }
   if(kind==='joints'){
     update('robot-base-frame',data.frame_id)
@@ -402,6 +444,12 @@ function bindTopicSelect(el){
   if(!el)return
   el.addEventListener('change',async()=>{
     const kind=el.dataset.kind,value=el.value
+    if(kind==='transform'){
+      delete state.topicDetails.transform
+      const base=$('#robot-base-frame'),end=$('#robot-end-frame')
+      if(base)base.value=''
+      if(end)end.value=''
+    }
     if(!value){delete state.topicDetails[kind];return}
     if(kind==='image'){
       delete state.topicDetails.image
@@ -443,6 +491,15 @@ function bindPage(){
     $('#joint-settings').style.display=mode==='joints'?'grid':'none'
     const host=$('#pose-topic-field')
     if(mode!=='tf'&&host){host.innerHTML=topicField(t('field.inputTopic'),'pose-topic','',mode);bindTopicSelect($('#pose-topic'))}
+    const frames=$('#robot-frame-fields')
+    if(frames){
+      const c=state.data.config
+      frames.innerHTML=mode==='transform'?
+        `<div class="field"><label for="robot-base-frame">${t('field.baseFrame')} · ${t('connect.fromTransform')}</label><input class="control" id="robot-base-frame" readonly placeholder="${t('connect.waitingTransform')}"/></div><div class="field"><label for="robot-end-frame">${t('field.endFrame')} · ${t('connect.fromTransform')}</label><input class="control" id="robot-end-frame" readonly placeholder="${t('connect.waitingTransform')}"/></div>`:
+        `${field(t('field.baseFrame'),'robot-base-frame',c.robot_base_frame||'')}${field(t('field.endFrame'),'robot-end-frame',c.robot_end_frame||'')}`
+    }
+    delete state.topicDetails.transform
+    if(mode!=='transform')for(const id of ['robot-base-frame','robot-end-frame'])$('#'+id)?.addEventListener('input',()=>state.autoFilled.delete(id))
   })
   $$('.topic-select').forEach(bindTopicSelect)
   for(const id of ['camera-frame','robot-base-frame','robot-end-frame','joint-names']){
@@ -484,7 +541,7 @@ function bindPage(){
   $('#import-intrinsics')?.addEventListener('click',async()=>{const path=await api?.selectIntrinsics?.();if(!path)return;const r=await request('import_intrinsics',{path},t('toast.settingsSaved'));toast(t('intrinsics.saved'),r.path,'success');await refreshState()})
   $('#copy-matrix')?.addEventListener('click',async()=>{const r=state.solveResult;if(!r)return;const content=`${r.parent_frame} -> ${r.child_frame}\n${r.transform_matrix.map(row=>row.map(v=>Number(v).toFixed(8)).join('  ')).join('\n')}`;await navigator.clipboard.writeText(content);toast(t('action.copyMatrix'),'','success')})
   $('#export-matrix')?.addEventListener('click',async()=>{const r=await request('export_matrix',{},t('action.exportMatrix'));toast(t('toast.saveComplete'),r.path,'success')})
-  $('#save-board')?.addEventListener('click',()=>saveConfig('board'))
+  $('#save-board')?.addEventListener('click',updateBoardSettings)
   $('#capture-intrinsic')?.addEventListener('click',async()=>{const r=await request('capture_intrinsic',{quality_mode:state.intrinsicQuality},t('toast.intrinsicCaptured'));toast(t('toast.sampleQuality'),`Sharpness ${n(r.sharpness,0)} · Coverage ${n(r.board_coverage_percent,1)}%`,'success');await refreshState()})
   $('#solve-intrinsic')?.addEventListener('click',async()=>{state.intrinsicResult=await request('solve_intrinsic',{quality_mode:state.intrinsicQuality},t('toast.intrinsicSolved'));await refreshState();renderPage()})
   $('#clear-intrinsic')?.addEventListener('click',async()=>{await request('clear_intrinsic',{},t('toast.intrinsicCleared'));state.intrinsicResult=null;await refreshState()})
@@ -541,7 +598,7 @@ function updatePreviewFrame(data){
   })
 }
 
-function updatePoseView(data){state.data.ros={...(state.data.ros||{}),running:true,pose:data};const pose=$('#pose-live');if(pose)pose.textContent=poseText();if(state.page==='connect'){applyTopicDetails('pose',{frame_id:data.frame_id,child_frame_id:data.child_frame_id})}updateShell()}
+function updatePoseView(data){state.data.ros={...(state.data.ros||{}),running:true,pose:data};const pose=$('#pose-live');if(pose)pose.textContent=poseText();if(state.page==='connect'){applyTopicDetails(state.data.config.ros_input_type==='transform'?'transform':'pose',{frame_id:data.frame_id,child_frame_id:data.child_frame_id})}updateShell()}
 function updateRuntimeView(){const rt=state.runtime||{};const installed=Boolean(rt.runtimeInstalled);const label=$('#runtime-health-label');if(label)label.textContent=installed?t('runtime.ready'):t('runtime.notInstalled');const pathEl=$('#runtime-health-path');if(pathEl)pathEl.textContent=rt.runtimePython||'~/.local/share/handeye-calibration/.venv/bin/python';const info=$('#runtime-info-box');if(info)info.textContent=`Ubuntu : ${rt.ubuntu||t('common.unknown')}
 ROS    : ${rt.rosDistro||t('common.notDetected')}
 Setup  : ${rt.rosSetup||t('common.notDetected')}

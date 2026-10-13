@@ -328,3 +328,15 @@ textarea.control { height:auto; min-height:82px; padding-top:10px; resize:vertic
 .connection-note { color:var(--text-muted); font-size:10.7px; line-height:1.5; margin-left:auto; }
 .connection-actions .btn { white-space:nowrap; }
 @media(max-width:1100px){.connection-note{margin-left:0;width:100%}}
+
+
+.board-inline-editor { border:1px solid var(--border-default); border-radius:14px; background:var(--card-bg); box-shadow:var(--shadow); overflow:hidden; }
+.board-inline-editor summary { display:flex; align-items:center; gap:12px; padding:16px 18px; cursor:pointer; user-select:none; list-style:none; }
+.board-inline-editor summary::-webkit-details-marker { display:none; }
+.board-inline-editor summary::after { content:'⌄'; color:var(--text-muted); margin-left:0; font-size:20px; transition:transform .2s var(--ease-spring); }
+.board-inline-editor[open] summary::after { transform:rotate(180deg); }
+.board-inline-label { display:inline-flex; align-items:center; gap:8px; font-size:13px; white-space:nowrap; }
+.board-inline-label svg { width:17px; height:17px; color:var(--accent); }
+.board-inline-summary { color:var(--text-secondary); font-size:12px; text-align:right; margin-left:auto; }
+.board-inline-content { border-top:1px solid var(--border-subtle); padding:16px 18px 18px; }
+@media (max-width: 700px) { .board-inline-editor summary { flex-wrap:wrap; } .board-inline-summary { margin-left:0; } }

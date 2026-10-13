@@ -37,7 +37,7 @@ PoseStamped 的 `header.frame_id` 不能代表末端 Frame，必须明确描述�
 
 选择下列方式之一完成内参准备
 
-- 点击使用 ROS2 CameraInfo，将有效内参写入当前输出目录
+- 点击内参使用 ROS2 CameraInfo，将有效内参写入当前输出目录
 - 点击导入内参 YAML，使用已有的相机内参
 - 从多个角度采集标定板图像后求解内参
 
@@ -65,8 +65,21 @@ GUI 支持复制矩阵和导出 `handeye_transform.yaml`，包含两端 Frame、
 
 ## 六 典型机器人示例
 
-机械臂发布 `/arm/pose`，消息为 `base_link → tool0` 时，选择 PoseStamped 并把末端 Frame 填写为 `tool0`
+机械臂发布 `/arm/tool_transform` 时，选择 TransformStamped，从 `header.frame_id` 和 `child_frame_id` 自动获取 `base_link → tool0`
 
 相机发布 `Image` 和 `CameraInfo` 时，选择实际话题，软件读取图像与光学 Frame
 
 采集与求解后得到 `tool0 → camera`，如需以其他固定末端 Frame 表达可在机器人侧进行已知刚体坐标变换
+
+## 机械臂末端坐标系
+
+推荐选择 `TransformStamped` 和 `/arm/tool_transform`，基座与末端 Frame 自动从数据中读取，字段不可手动修改
+
+`PoseStamped` 仅用于兼容旧发布端，必须明确设置实际末端 Frame
+
+
+更新棋盘参数可在相机内参页面操作，也可在手眼采样页面展开标定棋盘进行修改
+
+更新棋盘不会断开机器人或相机，已有采集数据时需确认清空当前采集，已经保存到磁盘的文件不会自动删除
+
+ArUco 字典使用下拉菜单，只提供当前 OpenCV 环境实际支持的字典

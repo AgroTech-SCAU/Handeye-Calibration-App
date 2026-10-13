@@ -1,6 +1,6 @@
 # Handeye-Calibration-App
 
-面向 ROS2 机械臂的 Linux 桌面手眼标定应用，提供相机内参标定、Eye-in-Hand 样本采集、手眼求解、诊断与验证的一体化工作流
+通用 ROS2 眼在手上标定桌面应用，独立于机械臂品牌、控制器与机器人系统集成框架
 
 ## 功能
 
@@ -33,7 +33,7 @@ ROS_SETUP=/opt/ros/humble/setup.bash ./launch.sh
 
 1. 在连接页面设置输出目录，在统一机器人接口中选择相机输入与机械臂位姿来源
 2. 点击「搜索话题」，从按消息类型过滤的下拉列表选择 Image、CameraInfo 与机械臂位姿话题
-3. 选择话题后自动读取可获得的 Frame、分辨率或关节名称，`PoseStamped` 的末端 Frame 由用户明确填写
+3. 机械臂位姿优先选择 `TransformStamped`，自动从消息获取基座及末端 Frame，`PoseStamped` 兼容模式下才需填写末端 Frame
 4. 点击「连接机器人」，应用先检查必填信息和话题类型，再同时连接位姿与相机，并在收到图像后开启实时预览
 5. 选择普通棋盘格或 CharUco，并导入 CameraInfo、YAML 或重新标定内参
 6. 保持标定板固定，移动机械臂至不同位姿，每次停稳后采样
@@ -44,7 +44,7 @@ ROS_SETUP=/opt/ros/humble/setup.bash ./launch.sh
 
 `PoseStamped.header.frame_id` 是位姿表达的参考 Frame，消息不含末端 Frame，需要用户另外填写
 
-`TransformStamped` 提供 `header.frame_id` 与 `child_frame_id`，TF2 通过配置两端 Frame 查询变换
+`TransformStamped` 提供 `header.frame_id` 与 `child_frame_id`，软件以收到的消息为准且不允许手动覆盖，TF2 通过配置两端 Frame 查询变换
 
 当机器人输入为 `base → end` 且相机固定在末端时，眼在手上的结果为 `end → camera`，矩阵单位为米
 
@@ -68,3 +68,5 @@ ROS2 CameraInfo 仅支持本应用可处理的针孔相机与兼容的畸变模�
 - `calibration_engine.py` — 内参与手眼样本采集
 - `algorithms/` — 标定求解、诊断、精化与结果核验
 - `USER_GUIDE.md` — 操作指南
+
+Tomato-Manipulation 的手眼标定节点可发布 `/arm/tool_transform`，输入类型选择 `TransformStamped` 后搜索并选择该话题

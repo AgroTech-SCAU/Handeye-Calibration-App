@@ -54,6 +54,25 @@ _install_zip_strict_compat()
 from algorithm_runner import joints_to_pose, run_algorithm
 from calibration_engine import CameraSession, HandEyeCollection, IntrinsicCalibration, detect_chessboard, rpy_to_quaternion
 from calibration_board import CalibrationBoard, positive_int
+
+
+BOARD_FIELDS = frozenset({
+    "board_type", "chessboard_cols", "chessboard_rows", "square_size_mm",
+    "charuco_squares_x", "charuco_squares_y", "charuco_marker_size_mm",
+    "charuco_dictionary", "charuco_min_corners", "charuco_legacy_pattern",
+})
+
+
+def available_aruco_dictionaries():
+    aruco = getattr(cv2, "aruco", None)
+    if aruco is None:
+        return []
+    series = ("4X4", "5X5", "6X6", "7X7")
+    sizes = ("50", "100", "250", "1000")
+    names = [f"DICT_{family}_{size}" for family in series for size in sizes]
+    names += ["DICT_ARUCO_ORIGINAL", "DICT_APRILTAG_16h5", "DICT_APRILTAG_25h9",
+              "DICT_APRILTAG_36h10", "DICT_APRILTAG_36h11"]
+    return [name for name in names if hasattr(aruco, name)]
 from capture_sync import PoseHistory
 from config import AppConfig
 from ros_interface import RosInterface, RosCameraInterface, RosJoints, RosPose, discover_ros_topics, inspect_ros_topic
@@ -149,6 +168,23 @@ class Bridge:
     def _emit(self, event: str, data: Any = None) -> None:
         self.out.send({"kind": "event", "event": event, "data": data})
 
+    def _saved_samples_match_board(self, path: Path) -> bool:
+        if not path.is_file():
+            return False
+        try:
+            import yaml
+            metadata = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            board = metadata.get("board")
+            if board:
+                return board == self.config.board_config()
+            if self.config.board_type != "chessboard":
+                return False
+            expected = f"{self.config.chessboard_cols}x{self.config.chessboard_rows}"
+            return (metadata.get("chessboard") == expected and
+                    float(metadata.get("square_size_mm", -1)) == self.config.square_size_mm)
+        except Exception:
+            return False
+
     def _state(self) -> dict[str, Any]:
         out, intrinsics, samples = self._paths()
         pose = None
@@ -162,14 +198,15 @@ class Bridge:
             }
         return {
             "mock": self.mock,
+            "aruco_dictionaries": available_aruco_dictionaries(),
             "config": {
                 "output_dir": self.config.output_dir,
                 "camera_source": self.config.camera_source,
                 "image_topic": self.config.image_topic,
                 "camera_info_topic": self.config.camera_info_topic,
                 "camera_frame": self.config.camera_frame,
-                "robot_base_frame": self.config.robot_base_frame,
-                "robot_end_frame": self.config.robot_end_frame,
+                "robot_base_frame": pose["frame_id"] if self.config.ros_input_type == "transform" and pose is not None else ("" if self.config.ros_input_type == "transform" else self.config.robot_base_frame),
+                "robot_end_frame": pose["child_frame_id"] if self.config.ros_input_type == "transform" and pose is not None else ("" if self.config.ros_input_type == "transform" else self.config.robot_end_frame),
                 "camera_index": self.config.camera_index,
                 "camera_width": self.config.camera_width,
                 "camera_height": self.config.camera_height,
@@ -208,7 +245,7 @@ class Bridge:
             },
             "handeye": {
                 "count": len(self.handeye.samples),
-                "samples_exists": samples.exists(),
+                "samples_exists": self._saved_samples_match_board(samples),
                 "samples_path": str(samples),
                 "result_path": str(samples.with_name(f"{samples.stem}_result.yaml")),
             },
@@ -396,13 +433,12 @@ class Bridge:
         if self.config.ros_input_type in ("transform", "tf") and not pose.child_frame_id:
             self._on_ros_error("TransformStamped 缺少 child_frame_id")
             return
-        if self.config.robot_base_frame and pose.frame_id and pose.frame_id.lstrip('/') != self.config.robot_base_frame.lstrip('/'):
+        # TransformStamped is authoritative about both frames, so stale manually
+        # entered fields from an older session cannot mislabel the calibration
+        if self.config.ros_input_type != "transform" and self.config.robot_base_frame and pose.frame_id and pose.frame_id.lstrip('/') != self.config.robot_base_frame.lstrip('/'):
             self._on_ros_error("机器人基座 Frame 与收到的消息不一致")
             return
-        child = pose.child_frame_id or self.config.robot_end_frame
-        if self.config.ros_input_type == "transform" and self.config.robot_end_frame and child != self.config.robot_end_frame:
-            self._on_ros_error("末端 Frame 与收到的 TransformStamped 不一致")
-            return
+        child = pose.child_frame_id if self.config.ros_input_type == "transform" else (pose.child_frame_id or self.config.robot_end_frame)
         if not pose.frame_id or not child or pose.frame_id == child:
             self._on_ros_error("末端位姿的基座或末端 Frame 无效")
             return
@@ -485,9 +521,20 @@ class Bridge:
                 raise ValueError("Frame 名称不能包含空白字符")
             setattr(candidate, key, frame)
         changed = {key for key in values if values[key] != getattr(self.config, key)}
+        board_changed = bool(changed & BOARD_FIELDS)
+        board_only = bool(changed) and changed <= BOARD_FIELDS
+        reset_captures = params.get("reset_captures", False)
+        if reset_captures not in (True, False):
+            raise ValueError("清空采集参数必须是布尔值")
+        if reset_captures and not board_only:
+            raise ValueError("仅更新棋盘参数时可以清空采集")
+        if board_changed and candidate.board_type == "charuco":
+            if candidate.charuco_dictionary not in available_aruco_dictionaries():
+                raise ValueError("请选择当前 OpenCV 支持的 ArUco 字典")
         acquisition = {"output_dir", "camera_source", "image_topic", "camera_info_topic", "camera_frame", "robot_base_frame", "robot_end_frame", "camera_index", "camera_width", "camera_height", "chessboard_cols", "chessboard_rows", "square_size_mm", "board_type", "ros_input_type", "pose_topic", "joint_dof", "joint_names"} | {k for k in values if k.startswith("charuco_")}
         if changed & acquisition and (self.intrinsic.image_sets or self.handeye.samples):
-            raise ValueError("采集会话中不能更换板参数、相机、位姿来源或输出目录，请先清空采集")
+            if not (board_only and board_changed and reset_captures):
+                raise ValueError("已有采集数据，更新棋盘前需确认清空采集，不必断开机器人")
         camera_fields = {"camera_source", "image_topic", "camera_info_topic", "camera_index", "camera_width", "camera_height"}
         if self.camera_open and changed & camera_fields:
             raise ValueError("更换相机配置前请关闭相机")
@@ -496,13 +543,29 @@ class Bridge:
         Path(candidate.output_dir).expanduser().mkdir(parents=True, exist_ok=True)
         candidate.save(self.config_path)
         self.config = candidate
-        if changed & acquisition:
+        if board_changed:
+            self.board_found, self.board_corners = False, None
+            self.preview_board = None
+            self.preview_detection = None
+        if board_changed and reset_captures:
+            self.intrinsic = IntrinsicCalibration()
+            self.handeye = HandEyeCollection()
+            self.source_frames = None
+        if changed & (acquisition - BOARD_FIELDS):
             self.board_found, self.board_corners = False, None
             with self.frame_lock:
                 self.current_frame, self.frame_received_at = None, None
             self.pose_history.clear()
             self.camera_info = None
         return self._state()
+
+    @serialized
+    def update_board(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Update board geometry while keeping active camera and robot subscriptions"""
+        invalid = set(params) - BOARD_FIELDS - {"reset_captures"}
+        if invalid:
+            raise ValueError("棋盘更新只接受棋盘参数")
+        return self._apply_config(params)
 
     @serialized
     def connect_robot(self, _params: dict[str, Any]) -> dict[str, Any]:
@@ -795,8 +858,12 @@ class Bridge:
         name = str(params.get("name", "solve"))
         mode = str(params.get("solve_mode", "robust"))
         _, _, samples = self._paths()
-        if not samples.exists():
-            raise FileNotFoundError("请先保存外参样本 samples.yaml")
+        if not self._saved_samples_match_board(samples):
+            raise FileNotFoundError("没有与当前棋盘参数匹配的采集数据，请先保存新样本")
+        result_path = samples.with_name(f"{samples.stem}_result.yaml")
+        if name == "verify" and (not result_path.exists() or
+                                  result_path.stat().st_mtime_ns < samples.stat().st_mtime_ns):
+            raise ValueError("请先对当前采集数据重新求解，再进行验证")
         chunks: list[str] = []
         def emit(text: str) -> None:
             chunks.append(text)
@@ -819,8 +886,12 @@ class Bridge:
         import yaml
         out, _, samples = self._paths()
         result_path = samples.with_name(f"{samples.stem}_result.yaml")
+        if not self._saved_samples_match_board(samples):
+            raise ValueError("求解结果对应的棋盘采集数据不匹配，请重新采集并求解")
         if not result_path.exists():
             raise FileNotFoundError("尚无手眼求解结果")
+        if result_path.stat().st_mtime_ns < samples.stat().st_mtime_ns:
+            raise ValueError("结果已过期，请重新求解当前采集数据")
         result = yaml.safe_load(result_path.read_text(encoding='utf-8')) or {}
         matrix = np.asarray(result.get('transform_matrix'), dtype=np.float64)
         parent, child = result.get('parent_frame'), result.get('child_frame')
@@ -846,6 +917,8 @@ class Bridge:
             return self._state()
         if method == "set_config":
             return self._apply_config(params)
+        if method == "update_board":
+            return self.update_board(params)
         if method == "discover_topics":
             return {"topics": [] if self.mock else discover_ros_topics()}
         if method == "inspect_topic":
