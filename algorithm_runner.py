@@ -82,3 +82,34 @@ def run_algorithm(
     except Exception:
         emit(traceback.format_exc())
         return 1
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+    import pickle
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--job", required=True, choices=("intrinsic", "diagnose", "solve", "verify"))
+    parser.add_argument("--samples", default="")
+    parser.add_argument("--mode", default="robust")
+    parser.add_argument("--snapshot", default="")
+    parser.add_argument("--output", default="")
+    parser.add_argument("--quality", default="standard")
+    parser.add_argument("--board", default="{}")
+    args = parser.parse_args()
+    if args.job == "intrinsic":
+        try:
+            with open(args.snapshot, "rb") as f:
+                calibration = pickle.load(f)
+            board = json.loads(args.board)
+            result = calibration.solve(Path(args.output),
+                                       int(board.get("cols", board.get("squares_x", 0))),
+                                       int(board.get("rows", board.get("squares_y", 0))),
+                                       float(board.get("square_size_mm", 0)),
+                                       quality_mode=args.quality, board=board)
+            print("HANDEYE_JOB_RESULT:" + json.dumps(result, ensure_ascii=False), flush=True)
+            sys.exit(0)
+        except Exception:
+            traceback.print_exc()
+            sys.exit(1)
+    sys.exit(run_algorithm(args.job, Path(args.samples), args.mode, sys.stdout.write))

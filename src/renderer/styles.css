@@ -340,3 +340,20 @@ textarea.control { height:auto; min-height:82px; padding-top:10px; resize:vertic
 .board-inline-summary { color:var(--text-secondary); font-size:12px; text-align:right; margin-left:auto; }
 .board-inline-content { border-top:1px solid var(--border-subtle); padding:16px 18px 18px; }
 @media (max-width: 700px) { .board-inline-editor summary { flex-wrap:wrap; } .board-inline-summary { margin-left:0; } }
+
+/* Resumable hand-eye collection and interruptible calculation */
+.sample-manager-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;color:var(--text-secondary);font-size:12px}
+.sample-list{max-height:236px;overflow:auto;border:1px solid var(--border-default);border-radius:12px;padding:5px}
+.sample-row{display:grid;grid-template-columns:20px 60px 85px minmax(0,1fr);gap:10px;align-items:center;min-height:36px;padding:5px 8px;border-radius:7px;font-size:12px;cursor:pointer}
+.sample-row:hover{background:var(--bg-hover)}
+.sample-row input{accent-color:var(--accent)}
+.sample-number{font-weight:700}
+.sample-error{font-variant-numeric:tabular-nums;color:var(--text-secondary)}
+.sample-date{color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.work-modal-backdrop{position:fixed;inset:0;background:rgba(8,9,15,.55);backdrop-filter:blur(5px);z-index:5000;display:flex;align-items:center;justify-content:center;padding:24px}
+.work-modal-card{min-width:min(380px,100%);max-width:min(460px,100%);padding:30px;background:var(--card-bg);border:1px solid var(--border-strong);border-radius:18px;box-shadow:var(--shadow-hover);text-align:center}
+.work-modal-card h3{margin:12px 0 6px;font-size:19px;color:var(--text-primary)}
+.work-modal-card p{margin:8px 0 20px;color:var(--text-secondary);font-size:13px}
+.work-modal-card button{min-width:110px}
+.work-loader{margin:0 auto;width:36px;height:36px;border:3px solid var(--border-strong);border-top-color:var(--accent);border-radius:50%;animation:work-spin .75s linear infinite}
+@keyframes work-spin{to{transform:rotate(360deg)}}

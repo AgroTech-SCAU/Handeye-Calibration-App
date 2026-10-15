@@ -9,6 +9,11 @@ import itertools
 import json
 import math
 import os
+import shutil
+import subprocess
+import tempfile
+import uuid
+import pickle
 import sys
 import threading
 import time
@@ -144,6 +149,8 @@ class Bridge:
         self.source_frames = None
         self.intrinsic = IntrinsicCalibration()
         self.handeye = HandEyeCollection()
+        self.samples_dirty = False
+        self.active_job = None
         self.latest_pose: RosPose | None = None
         self.latest_pose_at = None
         self.latest_robot_input: tuple[float, ...] | None = None
@@ -245,7 +252,14 @@ class Bridge:
             },
             "handeye": {
                 "count": len(self.handeye.samples),
-                "samples_exists": self._saved_samples_match_board(samples),
+                "samples_exists": self._saved_samples_match_board(samples) and not self.samples_dirty,
+                "quality_mode": self.handeye.quality_mode,
+                "samples": [
+                    {"id": item["id"], "reprojection_error_px": item.get("reprojection_error_px"),
+                     "captured_at": item.get("captured_at", ""), "quality_mode": item.get("quality_mode", "")}
+                    for item in self.handeye.samples
+                ],
+                "busy": self.active_job is not None,
                 "samples_path": str(samples),
                 "result_path": str(samples.with_name(f"{samples.stem}_result.yaml")),
             },
@@ -492,6 +506,7 @@ class Bridge:
 
     @serialized
     def _apply_config(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_no_job()
         values = asdict(self.config)
         integer_fields = {"camera_index", "camera_width", "camera_height", "chessboard_cols", "chessboard_rows", "joint_dof", "charuco_squares_x", "charuco_squares_y", "charuco_min_corners"}
         for key, value in params.items():
@@ -561,6 +576,7 @@ class Bridge:
 
     @serialized
     def update_board(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_no_job()
         """Update board geometry while keeping active camera and robot subscriptions"""
         invalid = set(params) - BOARD_FIELDS - {"reset_captures"}
         if invalid:
@@ -803,12 +819,14 @@ class Bridge:
         if mode == "auto" and frame_stamp is not None and timestamp is not None and abs(frame_stamp-timestamp) < 1 and abs(frame_stamp-timestamp) > .1:
             raise ValueError("ROS2 图像和机器人位姿的时间戳相差过大，请检查时间同步")
         quality = str(params.get("quality_mode", "standard"))
+        self._ensure_no_job()
         result = self.handeye.add(
             frame, pose, intrinsics,
             self.config.chessboard_cols, self.config.chessboard_rows,
             self.config.square_size_mm, input_mode, timestamp,
             robot_pose_input=robot_input, quality_mode=quality, board=self.config.board_config(),
         )
+        self.samples_dirty = True
         self.source_frames = frames
         self.handeye.samples[-1].update(robot_base_frame=robot_base, robot_end_frame=robot_end, camera_frame=camera_frame)
         if mode == "auto":
@@ -830,13 +848,21 @@ class Bridge:
 
     @serialized
     def clear_samples(self, _params: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_no_job()
         self.handeye = HandEyeCollection()
         self.source_frames = None
+        _, _, saved_path = self._paths()
+        if saved_path.exists():
+            shutil.copy2(saved_path, saved_path.with_name("samples.backup.yaml"))
+            saved_path.unlink()
+        self.samples_dirty = False
+        self._invalidate_result()
         self._emit_state()
         return {"count": 0}
 
     @serialized
     def save_samples(self, _params: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_no_job()
         _, intrinsics, samples = self._paths()
         self.handeye.save(
             samples, intrinsics, self.config.chessboard_cols,
@@ -848,10 +874,280 @@ class Bridge:
         if not base or not end or not cam:
             raise ValueError("采样坐标系不完整")
         document.update(robot_base_frame=base, robot_end_frame=end, camera_frame=cam)
-        samples.write_text(yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        temp = samples.with_name(samples.name + ".pending")
+        try:
+            temp.write_text(yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8")
+            temp.replace(samples)
+        finally:
+            temp.unlink(missing_ok=True)
+        self.samples_dirty = False
+        self._invalidate_result()
         self.ros.publish_status("samples_saved", path=str(samples), count=len(self.handeye.samples))
         self._emit_state()
         return {"path": str(samples), "count": len(self.handeye.samples)}
+
+    def _ensure_no_job(self) -> None:
+        if self.active_job is not None:
+            raise RuntimeError("请先等待当前计算完成或取消当前操作")
+
+    def _invalidate_result(self) -> None:
+        _, _, samples = self._paths()
+        # Old solutions must never be exported after a sample is deleted or imported
+        for name in (f"{samples.stem}_result.yaml", "handeye_transform.yaml"):
+            (samples.parent / name).unlink(missing_ok=True)
+
+    @serialized
+    def import_samples(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Restore a collection with its frozen board, intrinsics, frames and stable IDs"""
+        self._ensure_no_job()
+        if self.handeye.samples and not params.get("replace", False):
+            raise ValueError("当前会话已有样本，请先确认替换")
+        source = Path(str(params.get("path", ""))).expanduser().resolve()
+        if not source.is_file() or source.suffix.lower() not in (".yaml", ".yml"):
+            raise ValueError("请选择有效的 samples.yaml 文件")
+        import yaml
+        from calibration_engine import load_intrinsics, intrinsic_binding
+        data = yaml.safe_load(source.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("handeye_mode") != "eye_in_hand":
+            raise ValueError("文件不是 Eye-in-Hand 样本数据")
+        board = self.config.board_config()
+        if data.get("board") != board:
+            if not (self.config.board_type == "chessboard" and not data.get("board") and
+                    data.get("chessboard") == f"{self.config.chessboard_cols}x{self.config.chessboard_rows}" and
+                    float(data.get("square_size_mm", -1)) == self.config.square_size_mm):
+                raise ValueError("样本标定板与当前配置不同，请先更新标定板参数")
+        base, end, camera = (str(data.get(k) or "").strip() for k in
+                             ("robot_base_frame", "robot_end_frame", "camera_frame"))
+        if not base or not end or not camera or base == end:
+            raise ValueError("样本缺少可靠的基座、末端或相机坐标系，不允许猜测 Frame")
+        if self.latest_pose is not None:
+            if (base, end) != (self.latest_pose.frame_id, self.latest_pose.child_frame_id):
+                raise ValueError("导入样本的机器人 Frame 与当前在线机械臂不一致")
+        with self.frame_lock:
+            frame_id = self.frame_id
+        if frame_id and camera != frame_id:
+            raise ValueError("导入样本的相机 Frame 与当前图像话题不一致")
+        entries = data.get("samples")
+        if not isinstance(entries, list) or not entries:
+            raise ValueError("文件缺少有效样本")
+        if len(entries) > 10000:
+            raise ValueError("样本数量超出限制")
+        quality = data.get("collection_quality_mode") or entries[0].get("quality_mode") or "standard"
+        if quality not in ("minimal", "standard", "strict"):
+            raise ValueError("样本质量模式无法识别")
+        prepared, ids = [], set()
+        for number, entry in enumerate(entries, 1):
+            if not isinstance(entry, dict):
+                raise ValueError(f"样本 {number} 格式错误")
+            sid = entry.get("id", number)
+            if type(sid) is not int or sid <= 0 or sid in ids:
+                raise ValueError(f"样本 ID 无效或重复：{sid}")
+            ids.add(sid)
+            for key in ("gripper_in_base", "target_to_camera"):
+                matrix = np.asarray(entry.get(key), dtype=np.float64)
+                if (matrix.shape != (4, 4) or not np.isfinite(matrix).all()
+                    or not np.allclose(matrix[3], [0, 0, 0, 1], atol=1e-5)
+                    or not np.allclose(matrix[:3, :3].T @ matrix[:3, :3], np.eye(3), atol=1e-2)
+                    or abs(float(np.linalg.det(matrix[:3, :3])) - 1) > 1e-2):
+                    raise ValueError(f"样本 #{sid} 的 {key} 不是有效刚体变换")
+            if entry.get("quality_mode", quality) != quality:
+                raise ValueError("导入样本包含不一致的质量模式")
+            for key, expected in zip(("robot_base_frame", "robot_end_frame", "camera_frame"), (base, end, camera)):
+                if entry.get(key) and entry[key] != expected:
+                    raise ValueError(f"样本 #{sid} 的 Frame 与文件头不一致")
+            entry = dict(entry)
+            entry["id"] = sid
+            entry["quality_mode"] = quality
+            entry.update(robot_base_frame=base, robot_end_frame=end, camera_frame=camera)
+            prepared.append(entry)
+
+        out, intrinsic_path, target = self._paths()
+        captured_K = data.get("camera_matrix_at_collection")
+        captured_D = data.get("distortion_at_collection")
+        captured_size = data.get("image_size_at_collection")
+        if not captured_K or not captured_D or not captured_size or len(captured_size) != 2:
+            raise ValueError("样本缺少采集时冻结的相机内参，不能安全追加")
+        expected = dict(camera_matrix=captured_K, distortion_coefficients=captured_D,
+                        image_width=int(captured_size[0]), image_height=int(captured_size[1]),
+                        created_at=data.get("intrinsics_created_at"))
+        frozen = intrinsic_binding(expected)
+        if intrinsic_path.is_file():
+            _, _, current = load_intrinsics(intrinsic_path)
+            live = intrinsic_binding(current)
+            if not (np.allclose(live["camera_matrix"], frozen["camera_matrix"], atol=1e-9, rtol=0)
+                    and np.allclose(live["distortion"], frozen["distortion"], atol=1e-9, rtol=0)
+                    and live["image_size"] == frozen["image_size"]):
+                raise ValueError("样本冻结的相机内参与当前内参文件不一致")
+        else:
+            intrinsic_path.parent.mkdir(parents=True, exist_ok=True)
+            intrinsic_path.write_text(yaml.safe_dump(expected, sort_keys=False, allow_unicode=True), encoding="utf-8")
+            current = expected
+
+        collection = HandEyeCollection()
+        collection.samples = prepared
+        collection.quality_mode = quality
+        collection.board_spec = dict(board)
+        collection.binding = intrinsic_binding(current)
+        collection.intrinsics_snapshot = current
+        self.handeye = collection
+        self.source_frames = (base, end, camera)
+        self.samples_dirty = True
+        if target.exists() and target != source:
+            shutil.copy2(target, target.with_name("samples.backup.yaml"))
+        # Write the imported collection through the normal serialization path
+        saved = self.save_samples({})
+        return {"path": saved["path"], "count": len(prepared), "quality_mode": quality}
+
+    @serialized
+    def delete_samples(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_no_job()
+        selected = params.get("ids", [])
+        if not isinstance(selected, list) or not selected:
+            raise ValueError("请至少选择一个样本 ID")
+        try:
+            ids = {int(sid) for sid in selected}
+        except (ValueError, TypeError) as exc:
+            raise ValueError("样本 ID 必须是整数") from exc
+        known = {int(s["id"]) for s in self.handeye.samples}
+        if not ids <= known or len(ids) != len(selected):
+            raise ValueError("样本 ID 不存在或包含重复项")
+        _, _, current_path = self._paths()
+        if current_path.is_file():
+            shutil.copy2(current_path, current_path.with_name("samples.backup.yaml"))
+        self.handeye.samples = [s for s in self.handeye.samples if s["id"] not in ids]
+        self._invalidate_result()
+        if self.handeye.samples:
+            self.samples_dirty = True
+            self.save_samples({})
+        else:
+            self.handeye = HandEyeCollection()
+            self.source_frames = None
+            _, _, path = self._paths()
+            path.unlink(missing_ok=True)
+            self.samples_dirty = False
+        self._emit_state()
+        return {"deleted": sorted(ids), "count": len(self.handeye.samples)}
+
+    @serialized
+    def start_tool(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_no_job()
+        name = str(params.get("name", "solve"))
+        mode = str(params.get("solve_mode", "robust"))
+        if name not in ("diagnose", "solve", "verify", "intrinsic"):
+            raise ValueError("不支持的计算操作")
+        if name == "intrinsic":
+            if self.handeye.samples:
+                raise ValueError("已有外参样本，重新标定内参前请先清空外参样本")
+            quality = str(params.get("quality_mode", "standard"))
+            minimums = {"minimal": 3, "standard": 10, "strict": 15}
+            if quality not in minimums or len(self.intrinsic.image_sets) < minimums[quality]:
+                raise ValueError("内参采集数量未达到当前质量模式的要求")
+            if self.intrinsic.quality_mode != quality:
+                raise ValueError("内参采样质量模式不一致")
+        else:
+            _, _, samples = self._paths()
+            if self.samples_dirty or not self._saved_samples_match_board(samples):
+                raise ValueError("请先保存当前样本，再开始诊断或求解")
+            result_path = samples.with_name(f"{samples.stem}_result.yaml")
+            if name == "verify" and (not result_path.exists() or
+                    result_path.stat().st_mtime_ns < samples.stat().st_mtime_ns):
+                raise ValueError("请先对当前采集数据重新求解，再进行验证")
+        job = {"id": uuid.uuid4().hex, "name": name, "cancelled": False, "process": None}
+        self.active_job = job
+        worker = threading.Thread(target=self._run_job, args=(job, mode, params), daemon=True, name="calibration-job")
+        worker.start()
+        self._emit_state()
+        return {"id": job["id"], "name": name}
+
+    def _run_job(self, job: dict, mode: str, params: dict) -> None:
+        import yaml
+        logs = []
+        result = None
+        code = 1
+        try:
+            with tempfile.TemporaryDirectory(prefix="handeye_job_") as work:
+                work = Path(work)
+                _, intrinsics, samples = self._paths()
+                command = [sys.executable, "-u", str(ROOT / "algorithm_runner.py"),
+                           "--job", job["name"], "--mode", mode]
+                if job["name"] == "intrinsic":
+                    snapshot = work / "intrinsic.pkl"
+                    target = work / "camera_intrinsics.yaml"
+                    with self.session_lock:
+                        with snapshot.open("wb") as handle:
+                            pickle.dump(self.intrinsic, handle, protocol=pickle.HIGHEST_PROTOCOL)
+                    command += ["--snapshot", str(snapshot), "--output", str(target),
+                                "--quality", str(params.get("quality_mode", "standard")),
+                                "--board", json.dumps(self.config.board_config(), ensure_ascii=False)]
+                else:
+                    # Isolate algorithm output until successful completion so cancellation
+                    # cannot overwrite a validated solution
+                    shadow = work / "samples.yaml"
+                    shutil.copy2(samples, shadow)
+                    if intrinsics.is_file():
+                        shutil.copy2(intrinsics, work / "camera_intrinsics.yaml")
+                    result_file = samples.with_name(f"{samples.stem}_result.yaml")
+                    if job["name"] == "verify" and result_file.is_file():
+                        shutil.copy2(result_file, work / "samples_result.yaml")
+                    command += ["--samples", str(shadow)]
+                process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                           text=True, bufsize=1, cwd=str(ROOT))
+                with self.session_lock:
+                    job["process"] = process
+                    if job["cancelled"]:
+                        process.terminate()
+                for line in process.stdout:
+                    if line.startswith("HANDEYE_JOB_RESULT:"):
+                        result = json.loads(line.split(":", 1)[1])
+                    else:
+                        logs.append(line)
+                        self._emit("log", {"text": line})
+                code = process.wait()
+                with self.session_lock:
+                    if job["cancelled"]:
+                        code = 130
+                    if code == 0 and job["name"] == "intrinsic":
+                        if not target.is_file():
+                            code = 1
+                        else:
+                            target.replace(intrinsics)
+                            self.intrinsic = IntrinsicCalibration()
+                    if code == 0 and job["name"] == "solve":
+                        produced = work / "samples_result.yaml"
+                        if not produced.is_file():
+                            code = 1
+                        else:
+                            produced.replace(result_file)
+                            result = yaml.safe_load(result_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            code = 1
+            logs.append(f"计算错误：{exc}\n")
+            self._emit("log", {"text": logs[-1]})
+        finally:
+            with self.session_lock:
+                if self.active_job is job:
+                    self.active_job = None
+            self._emit("tool_done", {"id": job["id"], "name": job["name"], "ok": code == 0,
+                                      "cancelled": bool(job["cancelled"]), "exit_code": code,
+                                      "result": result, "log": "".join(logs)})
+            self._emit_state()
+
+    @serialized
+    def cancel_tool(self, params: dict[str, Any]) -> dict[str, Any]:
+        job = self.active_job
+        if not job or job["id"] != str(params.get("id", "")):
+            return {"cancelled": False}
+        job["cancelled"] = True
+        proc = job.get("process")
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            def ensure_stopped():
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            threading.Thread(target=ensure_stopped, daemon=True).start()
+        return {"cancelled": True}
 
     @serialized
     def run_tool(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -958,6 +1254,14 @@ class Bridge:
             return self.clear_samples(params)
         if method == "save_samples":
             return self.save_samples(params)
+        if method == "import_samples":
+            return self.import_samples(params)
+        if method == "delete_samples":
+            return self.delete_samples(params)
+        if method == "start_tool":
+            return self.start_tool(params)
+        if method == "cancel_tool":
+            return self.cancel_tool(params)
         if method == "export_matrix":
             return self.export_matrix(params)
         if method == "run_tool":
@@ -990,6 +1294,8 @@ class Bridge:
 
     def shutdown(self) -> None:
         self._running = False
+        if self.active_job:
+            self.cancel_tool({"id": self.active_job["id"]})
         if self._camera_thread.is_alive() and self._camera_thread is not threading.current_thread():
             self._camera_thread.join(timeout=2.0)
         try:

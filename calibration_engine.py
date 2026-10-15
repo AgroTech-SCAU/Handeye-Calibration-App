@@ -321,7 +321,7 @@ class HandEyeCollection:
         elif quality_mode != "minimal":
             raise ValueError(f"未知外参采样质量模式：{quality_mode}")
         sample = {
-            "id": len(self.samples) + 1,
+            "id": max((int(s["id"]) for s in self.samples), default=0) + 1,
             "captured_at": datetime.now().isoformat(timespec="seconds"),
             "gripper_in_base": gripper_in_base.tolist(),
             "target_to_camera": target_to_camera.tolist(),

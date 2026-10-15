@@ -365,6 +365,17 @@ ipcMain.handle('handeye:select-intrinsics', async () => {
   })
   return result.canceled ? '' : (result.filePaths[0] || '')
 })
+ipcMain.handle('handeye:select-samples', async (_event, initial) => {
+  const initialDirectory = typeof initial === 'string' && fs.existsSync(initial)
+    ? initial : app.getPath('documents')
+  const result = await dialog.showOpenDialog(win, {
+    title: '选择手眼标定样本 YAML',
+    defaultPath: initialDirectory,
+    properties: ['openFile'],
+    filters: [{ name: 'YAML', extensions: ['yaml', 'yml'] }]
+  })
+  return result.canceled ? '' : (result.filePaths[0] || '')
+})
 ipcMain.handle('handeye:runtime-info', () => {
   const cfg = bridgeCommand()
   return {

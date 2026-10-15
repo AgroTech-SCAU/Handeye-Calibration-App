@@ -25,6 +25,7 @@ def diagnose(samples_path):
     # 加载原始 YAML 数据 (用于访问 square_size_mm 等元数据)
     with open(samples_path) as f:
         data = yaml.safe_load(f)
+    sample_ids = [sample.get("id", i + 1) for i, sample in enumerate(data.get("samples", []))]
 
     print(f"\n{'='*60}")
     print(f"  标定数据诊断 | {mode} | {n} 样本")
@@ -40,11 +41,11 @@ def diagnose(samples_path):
         # R_diff = R_prev.T @ R_curr: 如果接近 180°，说明棋盘格翻转了
         angle = rotation_angle_deg(R_prev.T @ R_curr)
         if angle > 120:
-            flips.append((i + 1, angle))
+            flips.append((sample_ids[i - 1], sample_ids[i], angle))
     if flips:
         print(f"  ⚠️  发现 {len(flips)} 对相邻样本旋转 > 120° (疑似翻转):")
-        for idx, ang in flips:
-            print(f"     样本 #{idx-1} → #{idx}: 旋转 {ang:.1f}°")
+        for before_id, after_id, ang in flips:
+            print(f"     样本 #{before_id} → #{after_id}: 旋转 {ang:.1f}°")
     else:
         print(f"  ✅ 未发现相邻样本翻转")
 

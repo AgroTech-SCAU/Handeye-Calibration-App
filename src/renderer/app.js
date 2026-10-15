@@ -39,7 +39,7 @@ const state = {
   page:'connect', theme:localStorage.getItem('handeye-theme') || 'dark', language:initialLanguage, backend:'starting', runtime:null,
   data:{ config:{output_dir:'',camera_source:'ros',image_topic:'',camera_info_topic:'',camera_frame:'',robot_base_frame:'',robot_end_frame:'',camera_index:0,camera_width:640,camera_height:480,chessboard_cols:11,chessboard_rows:8,square_size_mm:15,board_type:'chessboard',charuco_squares_x:14,charuco_squares_y:9,charuco_marker_size_mm:15,charuco_dictionary:'DICT_5X5_100',charuco_min_corners:6,charuco_legacy_pattern:false,ros_input_type:'transform',pose_topic:'',joint_dof:5,joint_names:'',capture_topic:'',status_topic:'/handeye/status'}, camera:{open:false,board_found:false,width:640,height:480}, ros:{running:false,pose:null}, intrinsics:{count:0,exists:false}, handeye:{count:0,samples_exists:false}, output_dir:'' },
   arucoDictionaries:[], discoveredTopics:[], discoveredOnce:false, topicDetails:{}, autoFilled:new Set(), inspectingTopic:false, preview:'', logs:'', intrinsicQuality:'standard', handeyeQuality:'standard', sampleMode:'auto', manualType:'quaternion', angleUnit:'deg', solveMode:'robust',
-  intrinsicResult:null, solveResult:null, runtimeInstallLog:'', runtimeInstallState:'idle'
+  intrinsicResult:null, solveResult:null, selectedSampleIds:new Set(), busyJob:null, toolCompletions:new Map(), runtimeInstallLog:'', runtimeInstallState:'idle'
 }
 
 function createMockApi() {
@@ -67,11 +67,15 @@ function createMockApi() {
       if(method==='clear_intrinsic'){mock.intrinsics.count=0;emit('state',mock);return {count:0}}
       if(method==='capture_handeye'){mock.handeye.count++;emit('handeye',{count:mock.handeye.count,reprojection_error_px:.217,distance_mm:533,sharpness:171,pixels_per_square:24.9});emit('state',mock);return {count:mock.handeye.count,reprojection_error_px:.217,distance_mm:533,sharpness:171,pixels_per_square:24.9}}
       if(method==='save_samples'){mock.handeye.samples_exists=true;emit('state',mock);return {count:mock.handeye.count,path:'/tmp/handeye/samples.yaml'}}
+      if(method==='import_samples'){mock.handeye.samples=Array.from({length:12},(_,i)=>({id:i+1,reprojection_error_px:0.18+i*.009,captured_at:'',quality_mode:'standard'}));mock.handeye.count=12;mock.handeye.quality_mode='standard';mock.handeye.samples_exists=true;emit('state',mock);return {count:12,quality_mode:'standard',path:'/tmp/handeye/samples.yaml'}}
+      if(method==='delete_samples'){mock.handeye.samples=(mock.handeye.samples||[]).filter(x=>!params.ids.includes(x.id));mock.handeye.count=mock.handeye.samples.length;emit('state',mock);return {deleted:params.ids,count:mock.handeye.count}}
+      if(method==='start_tool'){const id='mock_'+Date.now();setTimeout(()=>{const data={id,name:params.name,ok:true,cancelled:false,result:params.name==='solve'?{transform_matrix:[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}:null};emit('tool_done',data)},1100);return {id,name:params.name}}
+      if(method==='cancel_tool')return {cancelled:true}
       if(method==='clear_samples'){mock.handeye.count=0;emit('state',mock);return {count:0}}
       if(method==='run_tool'){const text=`[mock] ${params.name} completed\n`;emit('log',{text}); const result={translation_m:[.041,-.018,.087],quaternion_xyzw:[.003,.012,-.004,.9999],translation_rms_mm:2.31,rotation_rms_deg:.42,transform_matrix:[[1,0,0,.041],[0,1,0,-.018],[0,0,1,.087],[0,0,0,1]]}; return {ok:true,exit_code:0,log:text,result}}
       return {}
     },
-    selectIntrinsics:async()=>'/tmp/handeye/intrinsics.yaml', selectDirectory:async()=>'/home/user/handeye-output', runtimeInfo:async()=>({packaged:false,ubuntu:'22.04',rosDistro:'humble',rosSetup:'/opt/ros/humble/setup.bash',python:'sandbox-mock',runtimePython:'/home/user/.local/share/handeye-calibration/.venv/bin/python',runtimeInstalled:true}),
+    selectIntrinsics:async()=>'/tmp/handeye/intrinsics.yaml', selectSamples:async()=>'/tmp/handeye/samples.yaml', selectDirectory:async()=>'/home/user/handeye-output', runtimeInfo:async()=>({packaged:false,ubuntu:'22.04',rosDistro:'humble',rosSetup:'/opt/ros/humble/setup.bash',python:'sandbox-mock',runtimePython:'/home/user/.local/share/handeye-calibration/.venv/bin/python',runtimeInstalled:true}),
     runtimeInstall:async()=>({ok:true,python:'/home/user/.local/share/handeye-calibration/.venv/bin/python'}), backendRestart:async()=>({ok:true}),
     onEvent:fn=>{listeners.push(fn);return()=>{}}, onRuntime:fn=>{runtime.push(fn);return()=>{}}, onRuntimeInstall:()=>()=>{}, onStderr:()=>()=>{}, onWindowState:()=>()=>{}, window:{minimize(){},maximize(){},close(){}}
   }
@@ -272,10 +276,24 @@ ${state.intrinsicResult?`<div class="callout">${icon('check')}<div><b>${t('intri
 function poseText(){const p=state.data.ros?.pose;if(!p)return t('robot.waitingData');const v=p.values||[];return `frame : ${p.frame_id||'-'} → ${p.child_frame_id||state.data.config.robot_end_frame||'-'}\nxyz   : ${n(v[0],5)}  ${n(v[1],5)}  ${n(v[2],5)} m\nxyzw  : ${n(v[3],5)}  ${n(v[4],5)}  ${n(v[5],5)}  ${n(v[6],5)}`}
 function manualFields(){let labels=state.manualType==='quaternion'?['x','y','z','qx','qy','qz','qw']:state.manualType==='rpy'?['x','y','z','roll','pitch','yaw']:Array.from({length:Number(state.data.config.joint_dof)||5},(_,i)=>`q${i+1}`);return `<div class="form-row three">${labels.map((l,i)=>field(l,`manual-${i}`,state.manualType==='quaternion'&&i===6?1:0,'number')).join('')}</div>`}
 function manualInputPanel(){return `<div class="manual-input-panel ${state.sampleMode==='manual'?'open':''}" id="manual-input-panel"><div class="manual-input-inner"><div class="divider"></div><div class="form-row"><div class="field"><label>${t('manual.type')}</label><select class="control" id="manual-type"><option value="quaternion" ${state.manualType==='quaternion'?'selected':''}>${t('manual.poseQuaternion')}</option><option value="rpy" ${state.manualType==='rpy'?'selected':''}>${t('manual.poseRpy')}</option><option value="joints" ${state.manualType==='joints'?'selected':''}>${t('manual.jointAngles')}</option></select></div><div class="field"><label>${t('manual.angleUnit')}</label><select class="control" id="angle-unit"><option value="deg" ${state.angleUnit==='deg'?'selected':''}>deg</option><option value="rad" ${state.angleUnit==='rad'?'selected':''}>rad</option></select></div></div><div id="manual-fields" style="margin-top:11px">${manualFields()}</div></div></div>`}
-function renderHandeye(){const h=state.data.handeye||{},ros=state.data.ros||{};const target=20,pct=Math.min(100,(h.count||0)/target*100);return `<div class="page">${pageHead(t('handeye.kicker'),t('handeye.title'),t('handeye.desc'),btn('go-solve',t('handeye.next'),'chevron'))}
+const HAND_EYE_TARGETS = {minimal:8, standard:20, strict:30}
+function qualityTarget(){return HAND_EYE_TARGETS[state.handeyeQuality] || 20}
+function sampleManager(){
+  const items=state.data.handeye?.samples||[]
+  const selection=state.selectedSampleIds
+  const rows=items.map(s=>`<label class="sample-row"><input type="checkbox" class="sample-check" value="${s.id}" ${selection.has(s.id)?'checked':''}><span class="sample-number">#${s.id}</span><span class="sample-error">${s.reprojection_error_px!=null&&Number.isFinite(Number(s.reprojection_error_px))?n(s.reprojection_error_px,3)+' px':'—'}</span><span class="sample-date">${escapeHtml(s.captured_at||'')}</span></label>`).join('')
+  return card(t('samples.manager'),t('samples.managerHint'),'scan',`<div class="sample-manager-top"><span>${t('samples.count',{count:items.length})}</span><button class="btn small" id="select-all-samples">${t('samples.selectAll')}</button></div><div class="sample-list">${rows||`<div class="help">${t('samples.empty')}</div>`}</div>`, `<div class="actions">${state.page==='solve'?btn('import-samples',t('samples.import'),'folder'):''}${btn('delete-selected-samples',t('samples.deleteSelected'),'trash','danger',selection.size?'':'disabled')}</div>`,true)
+}
+function handeyeQualitySegment(){
+  const count=state.data.handeye?.count||0
+  const html=qualitySegment('handeye-quality',state.handeyeQuality)
+  return count ? html.replaceAll('<button ', '<button disabled title="'+escapeHtml(t('samples.qualityLocked'))+'" ') : html
+}
+
+function renderHandeye(){const h=state.data.handeye||{},ros=state.data.ros||{};const target=qualityTarget(),pct=Math.min(100,(h.count||0)/target*100);return `<div class="page">${pageHead(t('handeye.kicker'),t('handeye.title'),t('handeye.desc'),btn('go-solve',t('handeye.next'),'chevron'))}
 <div class="grid preview-layout">${preview()}<div class="stack">${card(t('handeye.robotPose'),ros.running?t('handeye.robotAutoReceiving'):t('handeye.robotChooseSource'),'target',`<div class="pose-box" id="pose-live">${escapeHtml(poseText())}</div><div style="margin-top:12px"><div class="field"><label>${t('handeye.source')}</label>${segmentedControl('sample-mode',state.sampleMode,[['auto',t('handeye.auto')],['manual',t('handeye.manual')]])}</div></div>${manualInputPanel()}`)}
 ${boardEditor()}
-${card(t('handeye.collectionTitle'),t('handeye.collectionDesc'),'scan',`<div class="progress-label"><span>${t('handeye.captured',{count:h.count||0})}</span><span>${t('handeye.recommended',{count:target})}</span></div><div class="progress-track"><div class="progress-bar" style="width:${pct}%"></div></div><div style="margin-top:14px"><div class="field"><label>${t('intrinsics.quality')}</label>${qualitySegment('handeye-quality',state.handeyeQuality)}</div></div><div class="grid three" style="margin-top:13px"><div class="metric"><div class="metric-label">${t('handeye.samples')}</div><div class="metric-value">${h.count||0}</div></div><div class="metric"><div class="metric-label">${t('handeye.camera')}</div><div class="metric-value" style="font-size:16.1px;color:${state.data.camera?.open?'var(--success)':'var(--warning)'}">${state.data.camera?.open?t('status.ready'):t('status.offline')}</div></div><div class="metric"><div class="metric-label">${t('handeye.robot')}</div><div class="metric-value" id="robot-source-status" style="font-size:16.1px;color:${state.sampleMode==='manual'||ros.pose?'var(--success)':'var(--warning)'}">${state.sampleMode==='manual'?t('status.manual'):ros.pose?t('status.ready'):t('status.waiting')}</div></div></div>`,`<div class="actions">${btn('capture-handeye',t('handeye.capture'),'target','primary large')}${btn('save-samples',t('handeye.save'),'save')}${btn('clear-samples',t('action.clear'),'trash','danger')}</div>`,true)}</div></div></div>`}
+${card(t('handeye.collectionTitle'),t('handeye.collectionDesc'),'scan',`<div class="progress-label"><span>${t('handeye.captured',{count:h.count||0})}</span><span id="handeye-recommended">${t('handeye.recommended',{count:target})}</span></div><div class="progress-track"><div class="progress-bar" id="handeye-progress" style="width:${pct}%"></div></div><div style="margin-top:14px"><div class="field"><label>${t('intrinsics.quality')}</label>${handeyeQualitySegment()}</div></div><div class="grid three" style="margin-top:13px"><div class="metric"><div class="metric-label">${t('handeye.samples')}</div><div class="metric-value">${h.count||0}</div></div><div class="metric"><div class="metric-label">${t('handeye.camera')}</div><div class="metric-value" style="font-size:16.1px;color:${state.data.camera?.open?'var(--success)':'var(--warning)'}">${state.data.camera?.open?t('status.ready'):t('status.offline')}</div></div><div class="metric"><div class="metric-label">${t('handeye.robot')}</div><div class="metric-value" id="robot-source-status" style="font-size:16.1px;color:${state.sampleMode==='manual'||ros.pose?'var(--success)':'var(--warning)'}">${state.sampleMode==='manual'?t('status.manual'):ros.pose?t('status.ready'):t('status.waiting')}</div></div></div>`,`<div class="actions">${btn('capture-handeye',t('handeye.capture'),'target','primary large')}${btn('save-samples',t('handeye.save'),'save')}${btn('import-samples',t('samples.import'),'folder')}${btn('clear-samples',t('action.clear'),'trash','danger')}</div>`,true)}${sampleManager()}</div></div></div>`}
 
 function matrixHtml(result){const m=result?.transform_matrix;if(!Array.isArray(m)||m.length!==4)return `<div class="pose-box">${t('solve.waitingResult')}</div>`;return `<div class="result-matrix">${m.flat().map(v=>`<span>${n(v,6)}</span>`).join('')}</div>`}
 function renderSolve(){const h=state.data.handeye||{};const r=state.solveResult;return `<div class="page">${pageHead(t('solve.kicker'),t('solve.title'),t('solve.desc'))}
@@ -283,6 +301,7 @@ function renderSolve(){const h=state.data.handeye||{};const r=state.solveResult;
 <div class="grid preview-layout"><div class="stack">${card(t('solve.pipeline'),t('solve.pipelineDesc'),'flask',`<div class="field"><label>${t('solve.mode')}</label>${segmentedControl('solve-mode',state.solveMode,[['robust',t('solve.robust')],['minimal',t('solve.opencv')],['ba',t('solve.ba')]])}</div><div class="divider"></div><div class="actions">${btn('run-diagnose',t('action.diagnose'),'scan')}${btn('run-solve',t('action.solve'),'play','primary')}${btn('run-verify',t('action.verify'),'check')}</div>`)}
 ${card(t('solve.transform'),t('solve.transformDesc'),'target',`${r?`<div class="help">${escapeHtml(r.parent_frame||'?')} → ${escapeHtml(r.child_frame||'?')} · m</div>`:''}${matrixHtml(r)}${r?`<div class="grid two" style="margin-top:12px"><div class="metric"><div class="metric-label">${t('solve.translationRms')}</div><div class="metric-value">${n(r.translation_rms_mm,3)}<small>mm</small></div></div><div class="metric"><div class="metric-label">${t('solve.rotationRms')}</div><div class="metric-value">${n(r.rotation_rms_deg,3)}<small>deg</small></div></div></div>`:''}`)}</div>
 ${r?`<div class="actions" style="margin:10px 0">${btn('copy-matrix',t('action.copyMatrix'),'save')}${btn('export-matrix',t('action.exportMatrix'),'folder')}</div>`:''}
+${sampleManager()}
 ${card(t('solve.log'),t('solve.logDesc'),'terminal',`<div class="log-box" id="log-box">${escapeHtml(state.logs||t('solve.noOutput'))}</div>`,`<span style="font-size:11.5px;color:var(--text-dim)">${t('solve.coreProtected')}</span>`)}</div></div>`}
 
 function renderSettings(){const rt=state.runtime||{};const installed=Boolean(rt.runtimeInstalled);return `<div class="page">${pageHead(t('settings.kicker'),t('settings.title'),t('settings.desc'))}<div class="grid two">${card(t('settings.appearance'),t('settings.appearanceDesc'),'sun',`<div class="field"><label>${t('settings.theme')}</label><div class="theme-selector" id="theme-segment">${themeSettingsChoice('system',t('appearance.system'))}${themeSettingsChoice('dark',t('appearance.dark'))}${themeSettingsChoice('light',t('appearance.light'))}</div></div>`)}${card(t('settings.language'),t('settings.languageDesc'),'info',`<div class="field"><label>${t('settings.languageLabel')}</label>${segmentedControl('language-selector',state.language,[['zh-CN',t('settings.zhCN')],['en',t('settings.english')]],'amber')}</div>`)}${card(t('settings.runtime'),t('settings.runtimeDesc'),'terminal',`<div class="runtime-health"><div>${dot(installed?'success':'warning')}<b id="runtime-health-label">${installed?t('runtime.ready'):t('runtime.notInstalled')}</b></div><span id="runtime-health-path">${escapeHtml(rt.runtimePython||'~/.local/share/handeye-calibration/.venv/bin/python')}</span></div><div class="pose-box" id="runtime-info-box" style="margin-top:11px">Ubuntu : ${escapeHtml(rt.ubuntu||'unknown')}
@@ -308,6 +327,9 @@ function animateCurrentPage(){
 }
 
 function renderPage(animate=false){
+  if(state.data.handeye?.count && state.data.handeye?.quality_mode){state.handeyeQuality=state.data.handeye.quality_mode}
+  const present=new Set((state.data.handeye?.samples||[]).map(x=>Number(x.id)))
+  for(const id of state.selectedSampleIds){if(!present.has(id))state.selectedSampleIds.delete(id)}
   $$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.page===state.page))
   const names={connect:t('nav.connect'),intrinsics:t('nav.intrinsics'),handeye:t('nav.handeye'),solve:t('nav.solve'),settings:t('nav.settings'),about:t('nav.about')}
   $('#breadcrumb').textContent=(['settings','about'].includes(state.page)?t('breadcrumb.application'):t('breadcrumb.calibration'))+' / '+names[state.page]
@@ -328,6 +350,57 @@ function configFromForm(scope='connect'){
     c.charuco_squares_x=Number($('#charuco-x')?.value??c.charuco_squares_x);c.charuco_squares_y=Number($('#charuco-y')?.value??c.charuco_squares_y);c.charuco_marker_size_mm=Number($('#charuco-marker')?.value??c.charuco_marker_size_mm);c.charuco_dictionary=$('#charuco-dictionary')?.value??c.charuco_dictionary;c.charuco_min_corners=Number($('#charuco-min')?.value??c.charuco_min_corners);c.charuco_legacy_pattern=$('#charuco-legacy')?.checked??c.charuco_legacy_pattern
   }
   return c
+}
+function busyOverlay(label,cancellable=true){
+  let node=document.getElementById('work-modal')
+  if(!node){node=document.createElement('div');node.id='work-modal';node.className='work-modal-backdrop';document.body.appendChild(node)}
+  node.innerHTML=`<div class="work-modal-card" role="dialog" aria-modal="true" aria-live="polite"><div class="work-loader"></div><h3>${escapeHtml(label)}</h3><p id="work-detail">${t('work.running')}</p><button class="btn" id="cancel-work" ${cancellable?'':'disabled'}>${t('work.cancel')}</button></div>`
+  node.style.display='flex'
+  return node
+}
+function hideBusy(){const node=document.getElementById('work-modal');if(node)node.style.display='none'}
+async function busyRequest(method,params,label){
+  let finished=false,ignored=false
+  const timer=setTimeout(()=>{
+    if(finished)return
+    busyOverlay(label,false)
+    const detail=document.getElementById('work-detail')
+    if(detail)detail.textContent=t('work.waiting')
+  },450)
+  try{return await request(method,params)}finally{finished=true;clearTimeout(timer);hideBusy()}
+}
+async function launchCalculation(name,params,label){
+  if(state.busyJob){toast(t('work.running'),'','warning');return}
+  const job={id:null,name,label,cancelRequested:false,done:false}
+  state.busyJob=job
+  const overlay=busyOverlay(label,true)
+  $('#cancel-work')?.addEventListener('click',async()=>{
+    if(job.cancelRequested||job.done)return
+    job.cancelRequested=true
+    const detail=$('#work-detail');if(detail)detail.textContent=t('work.cancelling')
+    $('#cancel-work').disabled=true
+    if(job.id){try{await api.request('cancel_tool',{id:job.id})}catch(e){toast(t('toast.operationFailed'),String(e),'danger')}}
+  })
+  try{
+    const result=await api.request('start_tool',{name,...params})
+    job.id=result.id
+    if(job.cancelRequested)await api.request('cancel_tool',{id:job.id})
+    const completed=state.toolCompletions.get(job.id)
+    if(completed){state.toolCompletions.delete(job.id);completeCalculation(completed)}
+  }catch(e){state.busyJob=null;hideBusy();toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+}
+function completeCalculation(data){
+  const job=state.busyJob
+  if(!job||!job.id||job.id!==data.id){state.toolCompletions.set(data.id,data);return}
+  job.done=true
+  state.busyJob=null
+  hideBusy()
+  if(data.name==='solve')state.solveResult=data.ok?data.result||null:null
+  if(data.name==='intrinsic'&&data.ok)state.intrinsicResult=data.result||null
+  if(data.cancelled)toast(t('work.cancelled'),'','warning')
+  else if(data.ok)toast(t('toast.toolComplete',{name:job.label}),'','success')
+  else toast(t('toast.operationFailed'),t('solve.failed'),'danger')
+  refreshState().then(()=>{if(state.page==='solve'||state.page==='intrinsics')renderPage(false)})
 }
 async function request(method,params={},okMessage=''){
   if(!api){toast(t('toast.backendUnavailable'),t('toast.useElectron'),'danger');throw new Error('backend unavailable')}
@@ -390,6 +463,12 @@ function updateSampleModeView(){
   }
 }
 function refreshManualFields(){const host=$('#manual-fields');if(host)host.innerHTML=manualFields()}
+function updateHandeyeQualityView(){
+  const target=qualityTarget(),count=Number(state.data.handeye?.count)||0
+  const recommended=$('#handeye-recommended'),progress=$('#handeye-progress')
+  if(recommended)recommended.textContent=t('handeye.recommended',{count:target})
+  if(progress)progress.style.width=`${Math.min(100,count/target*100)}%`
+}
 function bindSegment(id,key,onChange){
   const el=$('#'+id)
   if(!el)return
@@ -483,7 +562,7 @@ function bindPage(){
     $('#board-charuco-fields').style.display=charuco?'block':'none'
     if(charuco&&Number($('#square-mm').value)<=Number($('#charuco-marker').value))$('#square-mm').value=20
   })
-  bindSegment('intrinsic-quality','intrinsicQuality',updateIntrinsicQualityView);bindSegment('handeye-quality','handeyeQuality');bindSegment('sample-mode','sampleMode',updateSampleModeView);bindSegment('solve-mode','solveMode')
+  bindSegment('intrinsic-quality','intrinsicQuality',updateIntrinsicQualityView);bindSegment('handeye-quality','handeyeQuality',updateHandeyeQualityView);bindSegment('sample-mode','sampleMode',updateSampleModeView);bindSegment('solve-mode','solveMode')
   $('#camera-source')?.addEventListener('change',e=>{const ros=e.target.value==='ros';$('#camera-ros-fields').style.display=ros?'grid':'none';$('#camera-local-fields').style.display=ros?'none':'grid'})
   $('#ros-input-type')?.addEventListener('change',e=>{
     const mode=e.target.value
@@ -543,14 +622,43 @@ function bindPage(){
   $('#export-matrix')?.addEventListener('click',async()=>{const r=await request('export_matrix',{},t('action.exportMatrix'));toast(t('toast.saveComplete'),r.path,'success')})
   $('#save-board')?.addEventListener('click',updateBoardSettings)
   $('#capture-intrinsic')?.addEventListener('click',async()=>{const r=await request('capture_intrinsic',{quality_mode:state.intrinsicQuality},t('toast.intrinsicCaptured'));toast(t('toast.sampleQuality'),`Sharpness ${n(r.sharpness,0)} · Coverage ${n(r.board_coverage_percent,1)}%`,'success');await refreshState()})
-  $('#solve-intrinsic')?.addEventListener('click',async()=>{state.intrinsicResult=await request('solve_intrinsic',{quality_mode:state.intrinsicQuality},t('toast.intrinsicSolved'));await refreshState();renderPage()})
+  $('#solve-intrinsic')?.addEventListener('click',async()=>{await launchCalculation('intrinsic',{quality_mode:state.intrinsicQuality},t('intrinsics.solveSave'))})
   $('#clear-intrinsic')?.addEventListener('click',async()=>{await request('clear_intrinsic',{},t('toast.intrinsicCleared'));state.intrinsicResult=null;await refreshState()})
   $('#go-handeye')?.addEventListener('click',()=>navigate('handeye'));$('#go-solve')?.addEventListener('click',()=>navigate('solve'))
   $('#manual-type')?.addEventListener('change',e=>{state.manualType=e.target.value;refreshManualFields()});$('#angle-unit')?.addEventListener('change',e=>{state.angleUnit=e.target.value})
   $('#capture-handeye')?.addEventListener('click',async()=>{const params={mode:state.sampleMode,quality_mode:state.handeyeQuality};if(state.sampleMode==='manual'){params.manual_type=state.manualType;params.angle_unit=state.angleUnit;params.values=$$('[id^="manual-"]').map(e=>Number(e.value))}const r=await request('capture_handeye',params,t('toast.handeyeCaptured'));toast(t('toast.sampleQuality'),`Reproj ${n(r.reprojection_error_px,3)} px · ${n(r.pixels_per_square,1)} px/square`,'success');await refreshState()})
+  $$('.sample-check').forEach(el=>el.addEventListener('change',()=>{const id=Number(el.value);if(el.checked)state.selectedSampleIds.add(id);else state.selectedSampleIds.delete(id);const button=$('#delete-selected-samples');if(button)button.disabled=!state.selectedSampleIds.size}))
+  $('#select-all-samples')?.addEventListener('click',()=>{const checkboxes=$$('.sample-check');const all=checkboxes.every(el=>el.checked);state.selectedSampleIds.clear();checkboxes.forEach(el=>{el.checked=!all;if(!all)state.selectedSampleIds.add(Number(el.value))});const button=$('#delete-selected-samples');if(button)button.disabled=!state.selectedSampleIds.size})
+  $('#delete-selected-samples')?.addEventListener('click',async()=>{const ids=[...state.selectedSampleIds].sort((a,b)=>a-b);if(!ids.length)return;if(!window.confirm(t('samples.confirmDelete',{ids:ids.join(', ')})))return;await busyRequest('delete_samples',{ids},t('samples.deleting'));state.selectedSampleIds.clear();state.solveResult=null;state.logs='';await refreshState()})
+  $('#import-samples')?.addEventListener('click',async()=>{
+    let path
+    try {
+      path=await api?.selectSamples?.(state.data.config?.output_dir||'')
+    } catch(error) {
+      toast(t('toast.operationFailed'),error.message||String(error),'danger')
+      return
+    }
+    if(!path)return
+    if((state.data.handeye?.count||0)&&!window.confirm(t('samples.confirmReplace')))return
+    let result
+    try {
+      result=await busyRequest('import_samples',{path,replace:true},t('samples.importing'))
+    } catch(_error) {
+      return
+    }
+    if(!result)return
+    state.handeyeQuality=result.quality_mode||'standard'
+    state.selectedSampleIds.clear()
+    state.solveResult=null
+    state.logs=''
+    await refreshState()
+  })
   $('#save-samples')?.addEventListener('click',async()=>{const r=await request('save_samples',{},t('toast.samplesSaved'));toast(t('toast.saveComplete'),r.path,'success');await refreshState()})
-  $('#clear-samples')?.addEventListener('click',async()=>{await request('clear_samples',{},t('toast.samplesCleared'));await refreshState()})
-  for(const [id,name,labelKey] of [['run-diagnose','diagnose','action.diagnose'],['run-solve','solve','action.solve'],['run-verify','verify','action.verify']]) $('#'+id)?.addEventListener('click',async()=>{const b=$('#'+id);b.disabled=true;if(name==='solve'){state.solveResult=null;renderPage();$('#'+id).disabled=true}try{const r=await request('run_tool',{name,solve_mode:state.solveMode},t('toast.toolComplete',{name:t(labelKey)}));if(r.log&&!state.logs.includes(r.log))state.logs+=r.log;if(name==='solve')state.solveResult=r.ok?r.result||null:null;if(!r.ok)toast(t('toast.operationFailed'),t('solve.failed'),'danger');renderPage();setTimeout(()=>{$('#log-box')?.scrollTo(0,999999)},0)}catch(e){if(name==='solve'){state.solveResult=null;renderPage()}appendBackendLog(String(e.message||e)+'\n')}finally{if($('#'+id))$('#'+id).disabled=false}})
+  $('#clear-samples')?.addEventListener('click',async()=>{if((state.data.handeye?.count||0)&&!window.confirm(t('samples.confirmClear')))return;await request('clear_samples',{},t('toast.samplesCleared'));state.selectedSampleIds.clear();state.solveResult=null;state.logs='';await refreshState()})
+  for(const [id,name,labelKey] of [['run-diagnose','diagnose','action.diagnose'],['run-solve','solve','action.solve'],['run-verify','verify','action.verify']]) $('#'+id)?.addEventListener('click',async()=>{
+    if(name==='solve'){state.solveResult=null;renderPage(false)}
+    await launchCalculation(name,{solve_mode:state.solveMode},t(labelKey))
+  })
   $('#install-runtime')?.addEventListener('click',async()=>{if(!api?.runtimeInstall)return;state.runtimeInstallState='running';state.runtimeInstallLog='';renderPage();try{await api.runtimeInstall();state.runtimeInstallState='done';state.runtime=await api.runtimeInfo();toast(t('toast.runtimeInstalled'),t('toast.backendRestarted'),'success')}catch(e){state.runtimeInstallState='error';toast(t('toast.runtimeFailed'),e.message||String(e),'danger')}renderPage()})
   $('#restart-backend')?.addEventListener('click',async()=>{if(!api?.backendRestart)return;await api.backendRestart();toast(t('toast.backendRestarting'),'','success')})
   const theme=$('#theme-segment');if(theme)$$('button',theme).forEach(b=>b.onclick=()=>applyTheme(b.dataset.theme))
@@ -606,7 +714,7 @@ Python : ${rt.python||t('common.unknown')}
 Interface: HandEye`;const log=$('#runtime-install-log');if(log){log.textContent=state.runtimeInstallLog.slice(-5000);log.classList.toggle('hidden',!state.runtimeInstallLog)}const install=$('#install-runtime');if(install)install.disabled=state.runtimeInstallState==='running';const installLabel=$('#install-runtime-label');if(installLabel)installLabel.textContent=state.runtimeInstallState==='running'?t('runtime.installing'):installed?t('runtime.repair'):t('runtime.install')}
 function appendBackendLog(text){state.logs+=text||'';const log=$('#log-box');if(log){log.textContent=state.logs;log.scrollTop=log.scrollHeight}}
 async function refreshState(){if(!api)return;try{state.data=await api.request('get_state');updateShell();renderPage(false)}catch(e){state.backend='error';updateShell()}}
-function handleEvent(msg){const {event,data}=msg;if(event==='state'){state.data=data;updateShell()}else if(event==='preview'){updatePreviewFrame(data)}else if(event==='pose'){updatePoseView(data)}else if(event==='log'){appendBackendLog(data.text||'')}else if(event==='error'){toast('Backend',data?.message||t('error.unknown'),'danger')}else if(event==='camera_metadata'){state.data.camera={...(state.data.camera||{}),frame_id:data?.frame_id||state.data.camera?.frame_id,width:data?.width||state.data.camera?.width,height:data?.height||state.data.camera?.height};if(state.page==='connect')applyTopicDetails('image',data)}else if(event==='tool_done'){if(data?.name==='solve')state.solveResult=data.ok?data.result||null:null}}
+function handleEvent(msg){const {event,data}=msg;if(event==='state'){state.data=data;updateShell()}else if(event==='preview'){updatePreviewFrame(data)}else if(event==='pose'){updatePoseView(data)}else if(event==='log'){appendBackendLog(data.text||'')}else if(event==='error'){toast('Backend',data?.message||t('error.unknown'),'danger')}else if(event==='camera_metadata'){state.data.camera={...(state.data.camera||{}),frame_id:data?.frame_id||state.data.camera?.frame_id,width:data?.width||state.data.camera?.width,height:data?.height||state.data.camera?.height};if(state.page==='connect')applyTopicDetails('image',data)}else if(event==='tool_done'){completeCalculation(data)}}
 
 async function boot(){document.documentElement.lang=state.language;shell();applyTheme(state.theme);renderPage(false);syncResponsiveShell();if(!responsiveListenerBound){responsiveListenerBound=true;window.addEventListener('resize',syncResponsiveShell,{passive:true})}if(!api){state.backend='unavailable';updateShell();toast(t('toast.bridgeMissing'),t('toast.startApp'),'warning');return}api.onEvent?.(handleEvent);api.onRuntime?.(m=>{state.backend=m.state||'unknown';state.runtime={...(state.runtime||{}),...m};updateShell();updateRuntimeView()});api.onRuntimeInstall?.(m=>{if(m.state==='starting')state.runtimeInstallState='running';if(m.state==='log')state.runtimeInstallLog+=(m.text||'');if(m.state==='done')state.runtimeInstallState='done';if(m.state==='error')state.runtimeInstallState='error';updateRuntimeView()});api.onStderr?.(t=>appendBackendLog('[backend] '+t));try{state.runtime=await api.runtimeInfo();const ping=await api.request('ping');state.backend=ping.pong?'ready':'error';state.data=await api.request('get_state')}catch(e){state.backend='error';toast(t('toast.backendStartFailed'),e.message,'danger')}updateShell();renderPage(false)}
 boot()

@@ -17,6 +17,8 @@
 Ubuntu 上准备 Python、Node.js、npm 和桌面环境
 
 ```bash
+chmod +x ./install.sh ./launch.sh
+
 ./install.sh
 ./launch.sh
 ```
@@ -70,3 +72,17 @@ ROS2 CameraInfo 仅支持本应用可处理的针孔相机与兼容的畸变模�
 - `USER_GUIDE.md` — 操作指南
 
 Tomato-Manipulation 的手眼标定节点可发布 `/arm/tool_transform`，输入类型选择 `TransformStamped` 后搜索并选择该话题
+
+## 样本清洗与继续采集
+
+手眼采样页面可导入之前保存的 `samples.yaml`
+
+导入时核对标定板、冻结内参、机械臂坐标系、相机坐标系及样本矩阵，恢复原有质量模式，并允许继续采集
+
+手眼采样页和求解与验证页都能根据稳定样本 ID 删除异常样本，删除后更新 `samples.yaml` 并使旧求解结果失效
+
+清洗前的文件保留为 `samples.backup.yaml`
+
+极简建议 8 组，标准建议 20 组，严格建议 30 组，达到数量不等于满足旋转激励及求解质量要求
+
+诊断、手眼求解、验证、相机内参求解在独立进程运行，可以通过进度弹窗取消，已存在的有效计算结果不会因取消而覆盖
