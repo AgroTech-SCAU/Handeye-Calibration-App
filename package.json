@@ -34,6 +34,10 @@
         "to": "handeye/algorithm_runner.py"
       },
       {
+        "from": "validation_engine.py",
+        "to": "handeye/validation_engine.py"
+      },
+      {
         "from": "calibration_engine.py",
         "to": "handeye/calibration_engine.py"
       },

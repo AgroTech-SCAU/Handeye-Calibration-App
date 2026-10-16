@@ -357,3 +357,27 @@ textarea.control { height:auto; min-height:82px; padding-top:10px; resize:vertic
 .work-modal-card button{min-width:110px}
 .work-loader{margin:0 auto;width:36px;height:36px;border:3px solid var(--border-strong);border-top-color:var(--accent);border-radius:50%;animation:work-spin .75s linear infinite}
 @keyframes work-spin{to{transform:rotate(360deg)}}
+
+/* Independent calibration verification */
+.validation-mode{margin:15px 0 16px;display:flex;align-items:center}
+.validation-fixed{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap}
+.validation-status-label{color:var(--warning);font-weight:650;font-size:13px}
+.validation-status-label.valid{color:var(--success)}
+.validation-fixed .help{margin-top:6px}
+.validation-empty{border:1px dashed var(--border-default);border-radius:12px;padding:25px;text-align:center;color:var(--text-muted);font-size:13px}
+.validation-path{word-break:break-word}
+.validation-status{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:12px}
+.validation-status b{color:var(--status-color);font-size:14px}
+.validation-status span{font-size:12px;color:var(--text-secondary)}
+.validation-metrics{margin-bottom:17px}
+.validation-trend{border:1px solid var(--border-default);border-radius:14px;padding:12px 16px;margin:14px 0}
+.validation-trend svg{overflow:visible}
+.validation-legend{display:flex;gap:22px;flex-wrap:wrap;font-size:11.5px;color:var(--text-secondary);margin:10px 0}
+.validation-legend span{display:inline-flex;align-items:center;gap:7px}
+.validation-legend span::before{content:'';width:10px;height:10px;border-radius:50%;background:var(--series);display:inline-block}
+.validation-table-wrap{overflow-x:auto;max-height:360px;overflow-y:auto;border:1px solid var(--border-default);border-radius:12px}
+.validation-table{border-collapse:collapse;width:100%;font-size:12px;min-width:420px}
+.validation-table th,.validation-table td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border-subtle)}
+.validation-table th{position:sticky;top:0;background:var(--card-bg);color:var(--text-secondary);font-weight:600}
+.validation-table td{font-variant-numeric:tabular-nums}
+.validation-table tr:last-child td{border-bottom:0}

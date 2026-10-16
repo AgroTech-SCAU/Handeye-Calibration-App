@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import yaml
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +60,8 @@ _install_zip_strict_compat()
 from algorithm_runner import joints_to_pose, run_algorithm
 from calibration_engine import CameraSession, HandEyeCollection, IntrinsicCalibration, detect_chessboard, rpy_to_quaternion
 from calibration_board import CalibrationBoard, positive_int
+from validation_engine import (freeze_solution, load_frozen, validate_metadata,
+    evaluate_dataset, evaluate_sample, sample_signature, digest)
 
 
 BOARD_FIELDS = frozenset({
@@ -150,6 +153,11 @@ class Bridge:
         self.intrinsic = IntrinsicCalibration()
         self.handeye = HandEyeCollection()
         self.samples_dirty = False
+        self.validation_collection = HandEyeCollection()
+        self.validation_source = ''
+        self.validation_reports = {'offline': None, 'live': None}
+        self.validation_live_preview = None
+        self.validation_overlay_enabled = False
         self.active_job = None
         self.latest_pose: RosPose | None = None
         self.latest_pose_at = None
@@ -166,11 +174,96 @@ class Bridge:
             self._on_ros_error,
         )
         self.ros_camera = RosCameraInterface(self._on_image, self._on_camera_info, self._on_ros_error)
+        self._restore_validation_session()
         self._camera_thread.start()
 
     def _paths(self) -> tuple[Path, Path, Path]:
         out = Path(self.config.output_dir).expanduser().resolve()
         return out, out / "camera_intrinsics.yaml", out / "samples.yaml"
+
+    def _restore_validation_session(self):
+        ref, saved, _ = self._validation_paths()
+        if not ref.is_file() or not saved.is_file():
+            return
+        try:
+            from calibration_engine import load_intrinsics, intrinsic_binding
+            fixed = load_frozen(ref)
+            document = yaml.safe_load(saved.read_text(encoding='utf-8')) or {}
+            validate_metadata(fixed, document)
+            signatures = [sample_signature(item) for item in document.get('samples', [])]
+            if any(sig in fixed['training_sample_signatures'] for sig in signatures):
+                return
+            _, intrinsic_path, _ = self._paths()
+            _, _, data = load_intrinsics(intrinsic_path)
+            session = HandEyeCollection()
+            session.samples = document.get('samples', [])
+            session.quality_mode = document.get('collection_quality_mode', 'minimal')
+            session.board_spec = document['board']
+            session.binding = intrinsic_binding(data)
+            session.intrinsics_snapshot = data
+            self.validation_collection = session
+            self.validation_live_preview = evaluate_dataset(fixed, document, mode='live')
+        except Exception:
+            pass
+
+    def _validation_report_path(self, mode):
+        return self._paths()[0] / f'validation_{mode}_report.yaml'
+
+    def _validation_paths(self):
+        out, _, _ = self._paths()
+        return (out / 'validation_reference.yaml', out / 'validation_samples.yaml',
+                out / 'validation_report.yaml')
+
+    @staticmethod
+    def _compact_validation_report(report):
+        if not report:
+            return None
+        return {**report, 'samples': [
+            {key: value for key, value in sample.items() if key not in ('observed_px','predicted_px')}
+            for sample in report.get('samples', [])
+        ]}
+
+    def _validation_state(self):
+        ref, samples, report = self._validation_paths()
+        status = 'unavailable'
+        frozen = None
+        if ref.is_file():
+            try:
+                frozen = load_frozen(ref)
+                status = 'ready'
+            except Exception:
+                status = 'stale'
+        reports = {}
+        if status == 'ready':
+            for mode in ('offline', 'live'):
+                doc = self.validation_reports.get(mode)
+                path = self._validation_report_path(mode)
+                if doc is None and path.is_file():
+                    try:
+                        doc = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
+                    except Exception:
+                        doc = None
+                if doc and doc.get('fixed_reference_sha256') == digest(frozen):
+                    reports[mode] = self._compact_validation_report(doc)
+        return {'live_preview': self._compact_validation_report(self.validation_live_preview) if status == 'ready' else None, 'reference_status': status, 'frames': [frozen[k] for k in ('robot_end_frame','camera_frame')] if frozen else [],
+                'train_count': frozen.get('training_sample_count',0) if frozen else 0,
+                'live_count': len(self.validation_collection.samples),
+                'import_path': self.validation_source, 'live_samples_path': str(samples),
+                'reference_path': str(ref), 'report_path': str(report),
+                'reports': reports, 'report': next(iter(reports.values()), None),
+                'overlay_enabled': self.validation_overlay_enabled}
+
+    def _invalidate_validation(self):
+        ref, _, report = self._validation_paths()
+        ref.unlink(missing_ok=True)
+        report.unlink(missing_ok=True)
+        for mode in ('offline', 'live'):
+            self._validation_report_path(mode).unlink(missing_ok=True)
+        self.validation_collection = HandEyeCollection()
+        self.validation_source = ''
+        self.validation_reports = {'offline': None, 'live': None}
+        self.validation_live_preview = None
+        self.validation_overlay_enabled = False
 
     def _emit(self, event: str, data: Any = None) -> None:
         self.out.send({"kind": "event", "event": event, "data": data})
@@ -264,6 +357,7 @@ class Bridge:
                 "result_path": str(samples.with_name(f"{samples.stem}_result.yaml")),
             },
             "output_dir": str(out),
+            "validation": self._validation_state(),
             "last_error": self.last_error,
         }
 
@@ -339,6 +433,26 @@ class Bridge:
                 display = frame.copy()
                 if self.board_found and self.board_corners is not None:
                     self.preview_board.draw(display, self.preview_detection)
+                if self.validation_overlay_enabled and self.board_found and self.board_corners is not None:
+                    try:
+                        ref = load_frozen(self._validation_paths()[0])
+                        latest = self.latest_pose
+                        if latest is not None and self.latest_pose_at is not None and time.monotonic()-self.latest_pose_at < .4 and (
+                            latest.frame_id,latest.child_frame_id,self.frame_id) == (ref['robot_base_frame'],ref['robot_end_frame'],ref['camera_frame']):
+                            from calibration_engine import make_transform, quaternion_to_matrix
+                            xyzquat = latest.values
+                            mat = make_transform(quaternion_to_matrix(*xyzquat[3:]), xyzquat[:3])
+                            from validation_engine import inv, valid_transform, _intrinsics
+                            predicted_pose = inv(mat @ valid_transform(ref['handeye_transform'],'X')) @ valid_transform(ref['board_reference_in_base'],'P')
+                            k,d,_ = _intrinsics(ref)
+                            rvec,_ = cv2.Rodrigues(predicted_pose[:3,:3])
+                            corners,_ = cv2.projectPoints(self.preview_detection.object_points,rvec,predicted_pose[:3,3],k,d)
+                            for pix in corners.reshape(-1,2):
+                                cv2.circle(display, tuple(np.round(pix).astype(int)), 3, (0,70,255), 1, cv2.LINE_AA)
+                            cv2.putText(display, 'GREEN observed / ORANGE predicted', (12,26),
+                                        cv2.FONT_HERSHEY_SIMPLEX,.55,(0,140,255),2,cv2.LINE_AA)
+                    except Exception:
+                        pass
                 # Keep preview responsive while limiting IPC bandwidth
                 h, w = display.shape[:2]
                 if w > 960:
@@ -559,6 +673,7 @@ class Bridge:
         candidate.save(self.config_path)
         self.config = candidate
         if board_changed:
+            self._invalidate_validation()
             self.board_found, self.board_corners = False, None
             self.preview_board = None
             self.preview_detection = None
@@ -827,6 +942,7 @@ class Bridge:
             robot_pose_input=robot_input, quality_mode=quality, board=self.config.board_config(),
         )
         self.samples_dirty = True
+        self._invalidate_validation()
         self.source_frames = frames
         self.handeye.samples[-1].update(robot_base_frame=robot_base, robot_end_frame=robot_end, camera_frame=camera_frame)
         if mode == "auto":
@@ -895,6 +1011,7 @@ class Bridge:
         # Old solutions must never be exported after a sample is deleted or imported
         for name in (f"{samples.stem}_result.yaml", "handeye_transform.yaml"):
             (samples.parent / name).unlink(missing_ok=True)
+        self._invalidate_validation()
 
     @serialized
     def import_samples(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1029,12 +1146,161 @@ class Bridge:
         return {"deleted": sorted(ids), "count": len(self.handeye.samples)}
 
     @serialized
+    def freeze_validation(self, _params: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_no_job()
+        out, _, samples = self._paths()
+        if self.samples_dirty or not self._saved_samples_match_board(samples):
+            raise ValueError('请先保存训练样本')
+        result = out / 'samples_result.yaml'
+        if not result.exists() or result.stat().st_mtime_ns < samples.stat().st_mtime_ns:
+            raise ValueError('求解结果缺失或已经过期，请先重新求解')
+        ref, live, report = self._validation_paths()
+        fixed = freeze_solution(samples, result, ref)
+        report.unlink(missing_ok=True)
+        for mode in ('offline','live'):
+            self._validation_report_path(mode).unlink(missing_ok=True)
+        if live.exists():
+            shutil.copy2(live, live.with_name('validation_samples.backup.yaml'))
+            live.unlink()
+        self.validation_collection = HandEyeCollection()
+        self.validation_reports = {'offline':None,'live':None}
+        self.validation_live_preview = None
+        self.validation_source = ''
+        self.validation_overlay_enabled = False
+        self._emit_state()
+        return {'path': str(ref), 'frames': [fixed['robot_end_frame'], fixed['camera_frame']]}
+
+    @serialized
+    def import_validation(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_no_job()
+        ref, _, report = self._validation_paths()
+        fixed = load_frozen(ref)
+        path = Path(str(params.get('path',''))).expanduser().resolve()
+        if not path.is_file() or path.suffix.lower() not in ('.yaml','.yml'):
+            raise ValueError('请选择独立验证 samples.yaml')
+        if path.resolve() == Path(fixed['training_sample_path']).resolve():
+            raise ValueError('不能把训练样本作为独立验证样本')
+        doc = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
+        validate_metadata(fixed, doc)
+        signatures = [sample_signature(s) for s in doc.get('samples',[])]
+        if not signatures or any(sig in fixed['training_sample_signatures'] for sig in signatures):
+            raise ValueError('验证数据为空或与训练样本重叠')
+        if len(set(signatures)) != len(signatures):
+            raise ValueError('验证数据存在重复样本')
+        self.validation_source = str(path)
+        self._validation_report_path('offline').unlink(missing_ok=True)
+        self.validation_reports['offline'] = None
+        if report.is_file(): report.unlink()
+        self._emit_state()
+        return {'path': str(path), 'count': len(signatures)}
+
+    @serialized
+    def set_validation_overlay(self, params: dict[str, Any]) -> dict[str, Any]:
+        self.validation_overlay_enabled = bool(params.get('enabled',False))
+        return {'enabled': self.validation_overlay_enabled}
+
+    @serialized
+    def capture_validation(self, _params: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_no_job()
+        ref, live_file, report = self._validation_paths()
+        fixed = load_frozen(ref)
+        with self.frame_lock:
+            frame = self.current_frame.copy() if self.current_frame is not None else None
+            frame_time = self.frame_received_at
+            frame_stamp = self.frame_ros_stamp
+            image_frame = self.frame_id
+        if frame is None or frame_time is None or time.monotonic()-frame_time > .5:
+            raise ValueError('相机图像未连接或已经过期')
+        if self.latest_pose is None:
+            raise ValueError('尚未收到机器人末端位姿')
+        entry, sync_dt = self.pose_history.match(frame_time, time.monotonic())
+        pose = entry['pose']
+        robot_input = entry['robot_input'] or pose
+        timestamp = entry['robot_timestamp']
+        if (self.latest_pose.frame_id,self.latest_pose.child_frame_id,image_frame) != (
+                fixed['robot_base_frame'],fixed['robot_end_frame'],fixed['camera_frame']):
+            raise ValueError('在线机器人或相机 Frame 与冻结矩阵不一致')
+        if frame_stamp is not None and timestamp is not None and abs(frame_stamp-timestamp) < 1 and abs(frame_stamp-timestamp) > .1:
+            raise ValueError('ROS2 图像与机器人位姿时间戳差异过大')
+        _, intrinsic_path, _ = self._paths()
+        if not intrinsic_path.is_file():
+            raise ValueError('缺少当前相机内参')
+        sample = self.validation_collection
+        captured = sample.add(frame, pose, intrinsic_path,
+             self.config.chessboard_cols,self.config.chessboard_rows,self.config.square_size_mm,
+             entry['input_mode'], timestamp, robot_pose_input=robot_input,
+             quality_mode='minimal',board=self.config.board_config())
+        new = sample.samples[-1]
+        new['id'] = max([int(s['id']) for s in sample.samples[:-1]], default=0) + 1
+        new.update(robot_base_frame=fixed['robot_base_frame'], robot_end_frame=fixed['robot_end_frame'],
+                   camera_frame=fixed['camera_frame'], sync_frame_pose_dt_ms=sync_dt)
+        signature = sample_signature(new)
+        if signature in fixed['training_sample_signatures'] or any(
+                signature == sample_signature(old) for old in sample.samples[:-1]):
+            sample.samples.pop()
+            raise ValueError('验证样本与训练数据或当前会话重复，请改变机械臂姿态')
+        # Commit the capture only after validation of geometry and independence
+        pending = live_file.with_suffix('.pending.yaml')
+        try:
+            sample.save(pending, intrinsic_path, self.config.chessboard_cols,
+                        self.config.chessboard_rows,self.config.square_size_mm,board=self.config.board_config())
+            doc = yaml.safe_load(pending.read_text(encoding='utf-8')) or {}
+            doc.update(robot_base_frame=fixed['robot_base_frame'], robot_end_frame=fixed['robot_end_frame'], camera_frame=fixed['camera_frame'])
+            row = evaluate_sample(fixed,new,doc)
+            preview = evaluate_dataset(fixed,doc,mode='live')
+            pending.write_text(yaml.safe_dump(doc,sort_keys=False,allow_unicode=True),encoding='utf-8')
+            pending.replace(live_file)
+        except Exception:
+            sample.samples.pop()
+            raise
+        finally:
+            pending.unlink(missing_ok=True)
+        self.validation_live_preview = preview
+        self._validation_report_path('live').unlink(missing_ok=True)
+        self.validation_reports['live'] = None
+        if report.is_file(): report.unlink()
+        self._emit_state()
+        return {'count':len(sample.samples),'sample':row}
+
+    @serialized
+    def clear_validation(self, _params: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_no_job()
+        _, live, report = self._validation_paths()
+        self.validation_collection = HandEyeCollection()
+        self.validation_reports['live'] = None
+        self.validation_live_preview = None
+        live.unlink(missing_ok=True)
+        self._validation_report_path('live').unlink(missing_ok=True)
+        if report.is_file(): report.unlink()
+        self._emit_state()
+        return {'count':0}
+
+    @serialized
+    def export_validation(self, _params: dict[str, Any]) -> dict[str, Any]:
+        mode = str(_params.get('mode','offline'))
+        if mode not in ('offline','live'): raise ValueError('验证模式无效')
+        report_path = self._validation_report_path(mode)
+        fixed = load_frozen(self._validation_paths()[0])
+        if not report_path.is_file():
+            raise ValueError('请先完成离线或真机验证')
+        report = yaml.safe_load(report_path.read_text(encoding='utf-8')) or {}
+        if report.get('fixed_reference_sha256') != digest(fixed):
+            raise ValueError('验证报告已经失效')
+        return {'path': str(report_path)}
+
+    @serialized
     def start_tool(self, params: dict[str, Any]) -> dict[str, Any]:
         self._ensure_no_job()
         name = str(params.get("name", "solve"))
         mode = str(params.get("solve_mode", "robust"))
-        if name not in ("diagnose", "solve", "verify", "intrinsic"):
+        if name not in ("diagnose", "solve", "intrinsic", "validate_offline", "validate_live"):
             raise ValueError("不支持的计算操作")
+        if name in ('validate_offline', 'validate_live'):
+            ref, live, _ = self._validation_paths()
+            load_frozen(ref)
+            validation_path = Path(self.validation_source) if name == 'validate_offline' else live
+            if not validation_path.is_file():
+                raise ValueError('请先导入独立验证样本或采集真机验证样本')
         if name == "intrinsic":
             if self.handeye.samples:
                 raise ValueError("已有外参样本，重新标定内参前请先清空外参样本")
@@ -1044,7 +1310,7 @@ class Bridge:
                 raise ValueError("内参采集数量未达到当前质量模式的要求")
             if self.intrinsic.quality_mode != quality:
                 raise ValueError("内参采样质量模式不一致")
-        else:
+        elif name not in ("validate_offline", "validate_live"):
             _, _, samples = self._paths()
             if self.samples_dirty or not self._saved_samples_match_board(samples):
                 raise ValueError("请先保存当前样本，再开始诊断或求解")
@@ -1070,7 +1336,16 @@ class Bridge:
                 _, intrinsics, samples = self._paths()
                 command = [sys.executable, "-u", str(ROOT / "algorithm_runner.py"),
                            "--job", job["name"], "--mode", mode]
-                if job["name"] == "intrinsic":
+                if job['name'] in ('validate_offline','validate_live'):
+                    ref, live, _ = self._validation_paths()
+                    source = Path(self.validation_source) if job['name'] == 'validate_offline' else live
+                    command = [sys.executable, '-u', str(ROOT / 'validation_engine.py'),
+                               '--reference', str(ref), '--samples', str(source),
+                               '--report', str(work / 'validation_report.yaml'),
+                               '--mode', 'offline' if job['name'] == 'validate_offline' else 'live']
+                    if params.get('thresholds'):
+                        command += ['--thresholds', json.dumps(params['thresholds'])]
+                elif job["name"] == "intrinsic":
                     snapshot = work / "intrinsic.pkl"
                     target = work / "camera_intrinsics.yaml"
                     with self.session_lock:
@@ -1112,12 +1387,25 @@ class Bridge:
                         else:
                             target.replace(intrinsics)
                             self.intrinsic = IntrinsicCalibration()
+                    if code == 0 and job['name'] in ('validate_offline','validate_live'):
+                        produced = work / 'validation_report.yaml'
+                        if not produced.is_file():
+                            code = 1
+                        else:
+                            _, _, report_path = self._validation_paths()
+                            mode = 'offline' if job['name'] == 'validate_offline' else 'live'
+                            produced.replace(self._validation_report_path(mode))
+                            shutil.copy2(self._validation_report_path(mode), report_path)
+                            result = yaml.safe_load(report_path.read_text(encoding='utf-8'))
+                            self.validation_reports[mode] = result
+                            result = self._compact_validation_report(result)
                     if code == 0 and job["name"] == "solve":
                         produced = work / "samples_result.yaml"
                         if not produced.is_file():
                             code = 1
                         else:
                             produced.replace(result_file)
+                            self._invalidate_validation()
                             result = yaml.safe_load(result_file.read_text(encoding="utf-8"))
         except Exception as exc:
             code = 1
@@ -1152,6 +1440,8 @@ class Bridge:
     @serialized
     def run_tool(self, params: dict[str, Any]) -> dict[str, Any]:
         name = str(params.get("name", "solve"))
+        if name not in ('diagnose','solve'):
+            raise ValueError('独立验证请使用验证页面，不允许旧的训练样本内验证')
         mode = str(params.get("solve_mode", "robust"))
         _, _, samples = self._paths()
         if not self._saved_samples_match_board(samples):
@@ -1258,6 +1548,18 @@ class Bridge:
             return self.import_samples(params)
         if method == "delete_samples":
             return self.delete_samples(params)
+        if method == 'freeze_validation':
+            return self.freeze_validation(params)
+        if method == 'import_validation':
+            return self.import_validation(params)
+        if method == 'set_validation_overlay':
+            return self.set_validation_overlay(params)
+        if method == 'capture_validation':
+            return self.capture_validation(params)
+        if method == 'clear_validation':
+            return self.clear_validation(params)
+        if method == 'export_validation':
+            return self.export_validation(params)
         if method == "start_tool":
             return self.start_tool(params)
         if method == "cancel_tool":

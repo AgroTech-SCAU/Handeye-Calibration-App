@@ -37,10 +37,15 @@ const initialLanguage = i18n?.loadLanguage?.() || 'en'
 
 const state = {
   page:'connect', theme:localStorage.getItem('handeye-theme') || 'dark', language:initialLanguage, backend:'starting', runtime:null,
-  data:{ config:{output_dir:'',camera_source:'ros',image_topic:'',camera_info_topic:'',camera_frame:'',robot_base_frame:'',robot_end_frame:'',camera_index:0,camera_width:640,camera_height:480,chessboard_cols:11,chessboard_rows:8,square_size_mm:15,board_type:'chessboard',charuco_squares_x:14,charuco_squares_y:9,charuco_marker_size_mm:15,charuco_dictionary:'DICT_5X5_100',charuco_min_corners:6,charuco_legacy_pattern:false,ros_input_type:'transform',pose_topic:'',joint_dof:5,joint_names:'',capture_topic:'',status_topic:'/handeye/status'}, camera:{open:false,board_found:false,width:640,height:480}, ros:{running:false,pose:null}, intrinsics:{count:0,exists:false}, handeye:{count:0,samples_exists:false}, output_dir:'' },
+  data:{ config:{output_dir:'',camera_source:'ros',image_topic:'',camera_info_topic:'',camera_frame:'',robot_base_frame:'',robot_end_frame:'',camera_index:0,camera_width:640,camera_height:480,chessboard_cols:11,chessboard_rows:8,square_size_mm:15,board_type:'chessboard',charuco_squares_x:14,charuco_squares_y:9,charuco_marker_size_mm:15,charuco_dictionary:'DICT_5X5_100',charuco_min_corners:6,charuco_legacy_pattern:false,ros_input_type:'transform',pose_topic:'',joint_dof:5,joint_names:'',capture_topic:'',status_topic:'/handeye/status'}, camera:{open:false,board_found:false,width:640,height:480}, ros:{running:false,pose:null}, intrinsics:{count:0,exists:false}, handeye:{count:0,samples_exists:false}, validation:{reference_status:'unavailable',report:null,live_count:0,import_path:''}, output_dir:'' },
   arucoDictionaries:[], discoveredTopics:[], discoveredOnce:false, topicDetails:{}, autoFilled:new Set(), inspectingTopic:false, preview:'', logs:'', intrinsicQuality:'standard', handeyeQuality:'standard', sampleMode:'auto', manualType:'quaternion', angleUnit:'deg', solveMode:'robust',
-  intrinsicResult:null, solveResult:null, selectedSampleIds:new Set(), busyJob:null, toolCompletions:new Map(), runtimeInstallLog:'', runtimeInstallState:'idle'
+  intrinsicResult:null, solveResult:null, validationMode:'offline', validationThresholds:{translation_rms_mm:5,rotation_rms_deg:1,projection_rms_px:4}, selectedSampleIds:new Set(), busyJob:null, toolCompletions:new Map(), runtimeInstallLog:'', runtimeInstallState:'idle'
 }
+
+const ARUCO_DICTIONARIES=[
+  ...['4X4','5X5','6X6','7X7'].flatMap(series=>['50','100','250','1000'].map(size=>`DICT_${series}_${size}`)),
+  'DICT_ARUCO_ORIGINAL','DICT_APRILTAG_16h5','DICT_APRILTAG_25h9','DICT_APRILTAG_36h10','DICT_APRILTAG_36h11'
+]
 
 function createMockApi() {
   let mock = JSON.parse(JSON.stringify(state.data)); mock.mock=true; mock.aruco_dictionaries=ARUCO_DICTIONARIES
@@ -58,6 +63,12 @@ function createMockApi() {
       if(method==='disconnect_robot'){mock.ros.running=false;mock.ros.pose=null;mock.camera.open=false;mock.camera.receiving=false;emit('state',mock);return mock}
       if(method==='import_camera_info'||method==='import_intrinsics')return {path:'/tmp/handeye/camera_intrinsics.yaml'};
       if(method==='export_matrix')return {path:'/tmp/handeye/handeye_transform.yaml'};
+      if(method==='set_validation_overlay')return {enabled:Boolean(params.enabled)};
+      if(method==='freeze_validation'){mock.validation={reference_status:'ready',frames:['tool0','camera_optical_frame'],train_count:20,live_count:0,import_path:'',report:null};emit('state',mock);return {path:'/tmp/handeye/validation_reference.yaml'}}
+      if(method==='import_validation'){mock.validation.import_path=params.path;return {path:params.path,count:7}}
+      if(method==='capture_validation'){mock.validation.live_count++;return {count:mock.validation.live_count}}
+      if(method==='clear_validation'){mock.validation.live_count=0;mock.validation.report=null;return {count:0}}
+      if(method==='export_validation')return {path:'/tmp/handeye/validation_report.yaml'};
       if(method==='open_camera'){ mock.camera.open=true; mock.camera.board_found=true; emit('state',mock); return mock.camera }
       if(method==='close_camera'){ mock.camera.open=false; emit('state',mock); return mock.camera }
       if(method==='start_ros'){ mock.ros.running=true; mock.ros.pose={values:[.412,-.083,.536,.012,.713,.008,.701],frame_id:'arm_base_link',timestamp:Date.now()/1000}; emit('pose',mock.ros.pose); emit('state',mock); return mock.ros }
@@ -140,7 +151,7 @@ function shell(){
       <aside class="sidebar">
         <div class="sidebar-hero"><div class="eyebrow">AgroTech · SCAU</div><h1>HandEye</h1><p>${t('sidebar.subtitle')}<br>${t('sidebar.eyeInHand')}</p></div>
         <div class="nav-caption">${t('sidebar.calibration')}</div><nav class="nav-list">
-          ${nav('connect','plug',t('nav.connect'),'01')}${nav('intrinsics','scan',t('nav.intrinsics'),'02')}${nav('handeye','target',t('nav.handeye'),'03')}${nav('solve','flask',t('nav.solve'),'04')}
+          ${nav('connect','plug',t('nav.connect'),'01')}${nav('intrinsics','scan',t('nav.intrinsics'),'02')}${nav('handeye','target',t('nav.handeye'),'03')}${nav('solve','flask',t('nav.solve'),'04')}${nav('validation','check',t('nav.validation'),'05')}
         </nav>
         <div class="nav-caption" style="margin-top:13px">${t('sidebar.application')}</div><nav class="nav-list">${nav('settings','settings',t('nav.settings'),'')}${nav('about','info',t('nav.about'),'')}</nav>
         <div class="sidebar-spacer"></div><div class="runtime-card"><div class="runtime-line">${dot('warning')}<span id="runtime-label">${t('status.backendState',{state:'starting'})}</span></div><div class="runtime-line" id="ros-sidebar">${t('status.rosChecking')}</div></div>
@@ -183,6 +194,7 @@ async function transitionToPage(page){
     if(epoch!==navigationEpoch)return
   }
   state.page=page
+  if(api?.request)void api.request('set_validation_overlay',{enabled:page==='validation'&&state.validationMode==='live'}).catch(()=>{})
   renderPage(false)
   const content=$('.content')
   if(content)content.scrollTop=0
@@ -246,10 +258,6 @@ function renderConnect(){
   </div></div></div>`
 }
 
-const ARUCO_DICTIONARIES=[
-  ...['4X4','5X5','6X6','7X7'].flatMap(series=>['50','100','250','1000'].map(size=>`DICT_${series}_${size}`)),
-  'DICT_ARUCO_ORIGINAL','DICT_APRILTAG_16h5','DICT_APRILTAG_25h9','DICT_APRILTAG_36h10','DICT_APRILTAG_36h11'
-]
 const BOARD_KEYS=['board_type','chessboard_cols','chessboard_rows','square_size_mm','charuco_squares_x','charuco_squares_y','charuco_marker_size_mm','charuco_dictionary','charuco_min_corners','charuco_legacy_pattern']
 function arucoDictionaryField(value){
   const known=state.data.aruco_dictionaries||ARUCO_DICTIONARIES
@@ -298,11 +306,50 @@ ${card(t('handeye.collectionTitle'),t('handeye.collectionDesc'),'scan',`<div cla
 function matrixHtml(result){const m=result?.transform_matrix;if(!Array.isArray(m)||m.length!==4)return `<div class="pose-box">${t('solve.waitingResult')}</div>`;return `<div class="result-matrix">${m.flat().map(v=>`<span>${n(v,6)}</span>`).join('')}</div>`}
 function renderSolve(){const h=state.data.handeye||{};const r=state.solveResult;return `<div class="page">${pageHead(t('solve.kicker'),t('solve.title'),t('solve.desc'))}
 <div class="grid two" style="margin-bottom:14px"><div class="metric"><div class="metric-label">samples.yaml</div><div class="metric-value" style="font-size:17.25px;color:${h.samples_exists?'var(--success)':'var(--warning)'}">${h.samples_exists?t('status.ready'):t('status.notSaved')}</div><div class="metric-meta">${escapeHtml(h.samples_path||'')}</div></div><div class="metric"><div class="metric-label">${t('solve.result')}</div><div class="metric-value" style="font-size:17.25px;color:${r?'var(--success)':'var(--text-secondary)'}">${r?t('status.solved'):t('status.waiting')}</div><div class="metric-meta">samples_result.yaml</div></div></div>
-<div class="grid preview-layout"><div class="stack">${card(t('solve.pipeline'),t('solve.pipelineDesc'),'flask',`<div class="field"><label>${t('solve.mode')}</label>${segmentedControl('solve-mode',state.solveMode,[['robust',t('solve.robust')],['minimal',t('solve.opencv')],['ba',t('solve.ba')]])}</div><div class="divider"></div><div class="actions">${btn('run-diagnose',t('action.diagnose'),'scan')}${btn('run-solve',t('action.solve'),'play','primary')}${btn('run-verify',t('action.verify'),'check')}</div>`)}
+<div class="grid preview-layout"><div class="stack">${card(t('solve.pipeline'),t('solve.pipelineDesc'),'flask',`<div class="field"><label>${t('solve.mode')}</label>${segmentedControl('solve-mode',state.solveMode,[['robust',t('solve.robust')],['minimal',t('solve.opencv')],['ba',t('solve.ba')]])}</div><div class="divider"></div><div class="actions">${btn('run-diagnose',t('action.diagnose'),'scan')}${btn('run-solve',t('action.solve'),'play','primary')}</div>`)}
 ${card(t('solve.transform'),t('solve.transformDesc'),'target',`${r?`<div class="help">${escapeHtml(r.parent_frame||'?')} → ${escapeHtml(r.child_frame||'?')} · m</div>`:''}${matrixHtml(r)}${r?`<div class="grid two" style="margin-top:12px"><div class="metric"><div class="metric-label">${t('solve.translationRms')}</div><div class="metric-value">${n(r.translation_rms_mm,3)}<small>mm</small></div></div><div class="metric"><div class="metric-label">${t('solve.rotationRms')}</div><div class="metric-value">${n(r.rotation_rms_deg,3)}<small>deg</small></div></div></div>`:''}`)}</div>
 ${r?`<div class="actions" style="margin:10px 0">${btn('copy-matrix',t('action.copyMatrix'),'save')}${btn('export-matrix',t('action.exportMatrix'),'folder')}</div>`:''}
+${card(t('validation.freezeTitle'),t('validation.freezeHint'),'check',`<div class="actions">${btn('freeze-validation',t('validation.freeze'),'check','primary')}${btn('go-validation',t('validation.goto'),'arrow-right')}</div>`)}
 ${sampleManager()}
 ${card(t('solve.log'),t('solve.logDesc'),'terminal',`<div class="log-box" id="log-box">${escapeHtml(state.logs||t('solve.noOutput'))}</div>`,`<span style="font-size:11.5px;color:var(--text-dim)">${t('solve.coreProtected')}</span>`)}</div></div>`}
+
+
+function validationTrend(report){
+  const rows=report?.samples||[]
+  if(!rows.length)return `<div class="validation-empty">${t('validation.noReport')}</div>`
+  const width=680,height=210,left=46,right=18,top=19,bottom=31
+  const series=[['translation_error_mm','#f59e0b',t('validation.translation')],['rotation_error_deg','#38bdf8',t('validation.rotation')]]
+  const maximum=Math.max(1,...rows.flatMap(r=>[Number(r.translation_error_mm)||0,Number(r.rotation_error_deg)||0]))*1.15
+  const x=i=>left+(width-left-right)*i/Math.max(1,rows.length-1)
+  const y=v=>height-bottom-(height-top-bottom)*Math.max(0,Number(v)||0)/maximum
+  const lines=series.map(([key,color])=>`<polyline fill="none" stroke="${color}" stroke-width="2.4" stroke-linejoin="round" points="${rows.map((r,i)=>`${x(i)},${y(r[key])}`).join(' ')}"/>`)
+  const points=series.flatMap(([key,color])=>rows.map((r,i)=>`<circle cx="${x(i)}" cy="${y(r[key])}" r="3" fill="${color}"><title>ID ${escapeHtml(r.id)} · ${n(r[key],3)}</title></circle>`))
+  const grid=[0,.5,1].map(f=>{const yy=y(f*maximum);return `<line x1="${left}" x2="${width-right}" y1="${yy}" y2="${yy}" stroke="currentColor" opacity=".12"/><text x="${left-8}" y="${yy+4}" text-anchor="end" fill="currentColor" opacity=".6" font-size="11">${n(f*maximum,1)}</text>`}).join('')
+  return `<div class="validation-trend"><svg role="img" aria-label="${escapeHtml(t('validation.chart'))}" viewBox="0 0 ${width} ${height}" width="100%">${grid}${lines.join('')}${points.join('')}<text x="${width-right}" y="${height-7}" text-anchor="end" fill="currentColor" opacity=".65" font-size="11">${escapeHtml(t('validation.sampleAxis'))}</text></svg><div class="validation-legend"><span style="--series:#f59e0b">${t('validation.translation')} · mm</span><span style="--series:#38bdf8">${t('validation.rotation')} · °</span></div></div>`
+}
+function validationMetric(label,value,unit){return `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${Number.isFinite(Number(value))?n(value,3):'—'} <small>${unit}</small></div></div>`}
+function validationReport(report){
+  if(!report)return `<div class="validation-empty">${t('validation.noReport')}</div>`
+  const m=report.metrics||{},rows=report.samples||[]
+  const status=report.status==='pass'?t('validation.pass'):report.status==='fail'?t('validation.fail'):t('validation.insufficient')
+  const badgeColor=report.status==='pass'?'var(--success)':report.status==='fail'?'var(--danger)':'var(--warning)'
+  const metrics=`<div class="grid three validation-metrics">${validationMetric(t('validation.transRms'),m.translation_mm_rms,'mm')}${validationMetric(t('validation.rotRms'),m.rotation_deg_rms,'°')}${validationMetric(t('validation.projRms'),m.projection_px_rms,'px')}${validationMetric(t('validation.transP95'),m.translation_mm_p95,'mm')}${validationMetric(t('validation.rotP95'),m.rotation_deg_p95,'°')}${validationMetric(t('validation.projP95'),m.projection_px_p95,'px')}</div>`
+  const list=rows.map(r=>`<tr><td>#${escapeHtml(r.id)}</td><td>${n(r.translation_error_mm,3)}</td><td>${n(r.rotation_error_deg,3)}</td><td>${n(r.prediction_reprojection_rms_px,3)}</td></tr>`).join('')
+  return `<div class="validation-status" style="--status-color:${badgeColor}"><b>${status}</b><span>${t('validation.reportCount',{count:rows.length})}</span></div>${metrics}${validationTrend(report)}<div class="validation-table-wrap"><table class="validation-table"><thead><tr><th>ID</th><th>${t('validation.translation')} mm</th><th>${t('validation.rotation')} °</th><th>${t('validation.projection')} px</th></tr></thead><tbody>${list}</tbody></table></div><p class="help">${t('validation.limitNote')}</p>`
+}
+function renderValidation(){
+  const v=state.data.validation||{},mode=state.validationMode,ready=v.reference_status==='ready', report=v.reports?.[mode]||(mode==='live'?v.live_preview:null)
+  const online=mode==='live'
+  const frames=(v.frames||[]).join(' → ')||'—'
+  const source=online?(v.live_samples_path||'validation_samples.yaml'):(v.import_path||t('validation.chooseDataset'))
+  return `<div class="page">${pageHead(t('validation.kicker'),t('validation.title'),t('validation.desc'))}
+  ${card(t('validation.fixed'),t('validation.fixedHint'),'check',`<div class="validation-fixed"><div><span class="validation-status-label ${ready?'valid':''}">${ready?t('validation.ready'):v.reference_status==='stale'?t('validation.stale'):t('validation.missing')}</span><div class="help">${escapeHtml(frames)}</div><div class="help">${t('validation.trainCount',{count:v.train_count||0})}</div></div><div class="actions">${btn('validation-freeze',t('validation.freeze'),'check')}</div></div>`)}
+  <div class="validation-mode">${segmentedControl('validation-mode',mode,[['offline',t('validation.offline')],['live',t('validation.live')]])}</div>
+  <div class="grid preview-layout">${online?preview():card(t('validation.datasetTitle'),t('validation.datasetHint'),'folder',`<div class="pose-box validation-path">${escapeHtml(source)}</div><div class="help">${t('validation.independence')}</div>`,`<div class="actions">${btn('validation-import',t('validation.import'),'folder','primary')}</div>`,true)}
+  <div class="stack">${online?card(t('validation.liveTitle'),t('validation.liveHint'),'camera',`<div class="metric"><div class="metric-label">${t('validation.liveCount')}</div><div class="metric-value">${v.live_count||0}</div></div><div class="validation-legend"><span style="--series:#22c55e">${t('validation.observed')}</span><span style="--series:#f97316">${t('validation.predicted')}</span></div><div class="help">${t('validation.liveSafety')}</div>`,`<div class="actions">${btn('validation-capture',t('validation.capture'),'target','primary',ready?'':'disabled')}${btn('validation-clear',t('validation.clear'),'trash','danger')}</div>`,true):card(t('validation.offlineTitle'),t('validation.offlineHint'),'scan',`<div class="help">${t('validation.offlineInfo')}</div>`)}
+  ${card(t('validation.runTitle'),t('validation.runHint'),'flask',`<div class="help">${t('validation.refNote')}</div><div class="form-row three validation-thresholds">${field(t('validation.limitTrans'),'limit-translation',state.validationThresholds.translation_rms_mm,'number')}${field(t('validation.limitRot'),'limit-rotation',state.validationThresholds.rotation_rms_deg,'number')}${field(t('validation.limitProj'),'limit-projection',state.validationThresholds.projection_rms_px,'number')}</div>`,`<div class="actions">${btn('validation-run',t('validation.run'),'play','primary',ready&&(online?(v.live_count||0)>0:!!v.import_path)?'':'disabled')}${btn('validation-export',t('validation.export'),'save','',v.reports?.[mode]?'':'disabled')}</div>`,true)}</div></div>
+  ${card(t('validation.reportTitle'),t('validation.reportDesc'),'check',validationReport(report))}</div>`
+}
 
 function renderSettings(){const rt=state.runtime||{};const installed=Boolean(rt.runtimeInstalled);return `<div class="page">${pageHead(t('settings.kicker'),t('settings.title'),t('settings.desc'))}<div class="grid two">${card(t('settings.appearance'),t('settings.appearanceDesc'),'sun',`<div class="field"><label>${t('settings.theme')}</label><div class="theme-selector" id="theme-segment">${themeSettingsChoice('system',t('appearance.system'))}${themeSettingsChoice('dark',t('appearance.dark'))}${themeSettingsChoice('light',t('appearance.light'))}</div></div>`)}${card(t('settings.language'),t('settings.languageDesc'),'info',`<div class="field"><label>${t('settings.languageLabel')}</label>${segmentedControl('language-selector',state.language,[['zh-CN',t('settings.zhCN')],['en',t('settings.english')]],'amber')}</div>`)}${card(t('settings.runtime'),t('settings.runtimeDesc'),'terminal',`<div class="runtime-health"><div>${dot(installed?'success':'warning')}<b id="runtime-health-label">${installed?t('runtime.ready'):t('runtime.notInstalled')}</b></div><span id="runtime-health-path">${escapeHtml(rt.runtimePython||'~/.local/share/handeye-calibration/.venv/bin/python')}</span></div><div class="pose-box" id="runtime-info-box" style="margin-top:11px">Ubuntu : ${escapeHtml(rt.ubuntu||'unknown')}
 ROS    : ${escapeHtml(rt.rosDistro||'not detected')}
@@ -331,9 +378,9 @@ function renderPage(animate=false){
   const present=new Set((state.data.handeye?.samples||[]).map(x=>Number(x.id)))
   for(const id of state.selectedSampleIds){if(!present.has(id))state.selectedSampleIds.delete(id)}
   $$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.page===state.page))
-  const names={connect:t('nav.connect'),intrinsics:t('nav.intrinsics'),handeye:t('nav.handeye'),solve:t('nav.solve'),settings:t('nav.settings'),about:t('nav.about')}
+  const names={connect:t('nav.connect'),intrinsics:t('nav.intrinsics'),handeye:t('nav.handeye'),solve:t('nav.solve'),validation:t('nav.validation'),settings:t('nav.settings'),about:t('nav.about')}
   $('#breadcrumb').textContent=(['settings','about'].includes(state.page)?t('breadcrumb.application'):t('breadcrumb.calibration'))+' / '+names[state.page]
-  const html={connect:renderConnect,intrinsics:renderIntrinsics,handeye:renderHandeye,solve:renderSolve,settings:renderSettings,about:renderAbout}[state.page]()
+  const html={connect:renderConnect,intrinsics:renderIntrinsics,handeye:renderHandeye,solve:renderSolve,validation:renderValidation,settings:renderSettings,about:renderAbout}[state.page]()
   $('#page').innerHTML=html
   if(animate)animateCurrentPage()
   bindPage(); updateShell()
@@ -400,7 +447,7 @@ function completeCalculation(data){
   if(data.cancelled)toast(t('work.cancelled'),'','warning')
   else if(data.ok)toast(t('toast.toolComplete',{name:job.label}),'','success')
   else toast(t('toast.operationFailed'),t('solve.failed'),'danger')
-  refreshState().then(()=>{if(state.page==='solve'||state.page==='intrinsics')renderPage(false)})
+  refreshState().then(()=>{if(['solve','intrinsics','validation'].includes(state.page))renderPage(false)})
 }
 async function request(method,params={},okMessage=''){
   if(!api){toast(t('toast.backendUnavailable'),t('toast.useElectron'),'danger');throw new Error('backend unavailable')}
@@ -562,6 +609,7 @@ function bindPage(){
     $('#board-charuco-fields').style.display=charuco?'block':'none'
     if(charuco&&Number($('#square-mm').value)<=Number($('#charuco-marker').value))$('#square-mm').value=20
   })
+  bindSegment('validation-mode','validationMode',()=>{void api?.request('set_validation_overlay',{enabled:state.validationMode==='live'});renderPage(false)});
   bindSegment('intrinsic-quality','intrinsicQuality',updateIntrinsicQualityView);bindSegment('handeye-quality','handeyeQuality',updateHandeyeQualityView);bindSegment('sample-mode','sampleMode',updateSampleModeView);bindSegment('solve-mode','solveMode')
   $('#camera-source')?.addEventListener('change',e=>{const ros=e.target.value==='ros';$('#camera-ros-fields').style.display=ros?'grid':'none';$('#camera-local-fields').style.display=ros?'none':'grid'})
   $('#ros-input-type')?.addEventListener('change',e=>{
@@ -655,9 +703,36 @@ function bindPage(){
   })
   $('#save-samples')?.addEventListener('click',async()=>{const r=await request('save_samples',{},t('toast.samplesSaved'));toast(t('toast.saveComplete'),r.path,'success');await refreshState()})
   $('#clear-samples')?.addEventListener('click',async()=>{if((state.data.handeye?.count||0)&&!window.confirm(t('samples.confirmClear')))return;await request('clear_samples',{},t('toast.samplesCleared'));state.selectedSampleIds.clear();state.solveResult=null;state.logs='';await refreshState()})
-  for(const [id,name,labelKey] of [['run-diagnose','diagnose','action.diagnose'],['run-solve','solve','action.solve'],['run-verify','verify','action.verify']]) $('#'+id)?.addEventListener('click',async()=>{
+  for(const [id,name,labelKey] of [['run-diagnose','diagnose','action.diagnose'],['run-solve','solve','action.solve']]) $('#'+id)?.addEventListener('click',async()=>{
     if(name==='solve'){state.solveResult=null;renderPage(false)}
     await launchCalculation(name,{solve_mode:state.solveMode},t(labelKey))
+  })
+  for(const id of ['freeze-validation','validation-freeze'])$('#'+id)?.addEventListener('click',async()=>{
+    if((state.data.validation?.live_count||0)>0&&!window.confirm(t('validation.confirmFreeze')))return
+    try{await request('freeze_validation',{},t('validation.frozen'));await refreshState();if(id==='freeze-validation')navigate('validation')}catch(_error){}
+  })
+  $('#go-validation')?.addEventListener('click',()=>navigate('validation'))
+  $('#validation-import')?.addEventListener('click',async()=>{
+    let path=''
+    try{path=await api?.selectSamples?.(state.data.config?.output_dir||'')}catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger');return}
+    if(!path)return
+    try{await request('import_validation',{path},t('validation.imported'));await refreshState()}catch(_error){}
+  })
+  $('#validation-capture')?.addEventListener('click',async()=>{
+    try{const r=await request('capture_validation',{},t('validation.captured'));await refreshState()}catch(_error){}
+  })
+  $('#validation-clear')?.addEventListener('click',async()=>{
+    if(!window.confirm(t('validation.confirmClear')))return
+    try{await request('clear_validation',{},t('validation.cleared'));await refreshState()}catch(_error){}
+  })
+  $('#validation-run')?.addEventListener('click',async()=>{
+    const limits={translation_rms_mm:Number($('#limit-translation')?.value),rotation_rms_deg:Number($('#limit-rotation')?.value),projection_rms_px:Number($('#limit-projection')?.value)}
+    if(!Object.values(limits).every(x=>Number.isFinite(x)&&x>0)){toast(t('toast.operationFailed'),t('validation.invalidLimits'),'danger');return}
+    state.validationThresholds=limits
+    await launchCalculation(state.validationMode==='offline'?'validate_offline':'validate_live',{thresholds:limits},t('validation.running'))
+  })
+  $('#validation-export')?.addEventListener('click',async()=>{
+    try{const r=await request('export_validation',{mode:state.validationMode},t('validation.exported'));toast(t('validation.reportPath'),r.path,'success')}catch(_error){}
   })
   $('#install-runtime')?.addEventListener('click',async()=>{if(!api?.runtimeInstall)return;state.runtimeInstallState='running';state.runtimeInstallLog='';renderPage();try{await api.runtimeInstall();state.runtimeInstallState='done';state.runtime=await api.runtimeInfo();toast(t('toast.runtimeInstalled'),t('toast.backendRestarted'),'success')}catch(e){state.runtimeInstallState='error';toast(t('toast.runtimeFailed'),e.message||String(e),'danger')}renderPage()})
   $('#restart-backend')?.addEventListener('click',async()=>{if(!api?.backendRestart)return;await api.backendRestart();toast(t('toast.backendRestarting'),'','success')})

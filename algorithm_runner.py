@@ -66,16 +66,6 @@ def run_algorithm(
                     use_ba=solve_mode == "ba",
                 )
                 return 0 if result is not None else 1
-            if name == "verify":
-                module = importlib.import_module("verify")
-                result_path = samples_path.with_name(f"{samples_path.stem}_result.yaml")
-                old_argv = sys.argv
-                try:
-                    sys.argv = ["verify.py", str(samples_path), "--result", str(result_path)]
-                    module.main()
-                finally:
-                    sys.argv = old_argv
-                return 0
             raise ValueError(f"未知算法任务：{name}")
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 1
@@ -89,7 +79,7 @@ if __name__ == "__main__":
     import json
     import pickle
     parser = argparse.ArgumentParser()
-    parser.add_argument("--job", required=True, choices=("intrinsic", "diagnose", "solve", "verify"))
+    parser.add_argument("--job", required=True, choices=("intrinsic", "diagnose", "solve"))
     parser.add_argument("--samples", default="")
     parser.add_argument("--mode", default="robust")
     parser.add_argument("--snapshot", default="")
