@@ -394,3 +394,44 @@ def inspect_ros_topic(topic: str, message_type: str, timeout_sec: float = 0.9):
         return {"received": bool(observed), "metadata": observed}
     finally:
         node.destroy_node()
+
+
+class RosDepthInterface:
+    """Independent aligned depth stream; no robot motion in this process"""
+    def __init__(self,on_depth,on_error):
+        self.on_depth=on_depth;self.on_error=on_error
+        self.node=None;self.executor=None;self.thread=None;self.running=False
+
+    def start(self,topic):
+        if self.running:return
+        if not topic.startswith('/'):
+            raise ValueError('请提供对齐深度 Image 话题，例如 /camera/aligned_depth_to_color/image_raw')
+        try:
+            import rclpy
+            from rclpy.node import Node
+            from rclpy.executors import SingleThreadedExecutor
+            from rclpy.qos import qos_profile_sensor_data
+            from sensor_msgs.msg import Image
+            from servo_engine import decode_depth_image
+        except ImportError as exc:
+            raise RuntimeError('连接深度图需要 ROS2 sensor_msgs 与 rclpy') from exc
+        if not rclpy.ok():rclpy.init(args=None)
+        node=Node('handeye_aligned_depth_input')
+        def on_image(msg):
+            try:
+                stamp=float(msg.header.stamp.sec)+float(msg.header.stamp.nanosec)*1e-9
+                self.on_depth(decode_depth_image(msg),stamp,str(msg.header.frame_id).lstrip('/'))
+            except Exception as exc:self.on_error(str(exc))
+        node.create_subscription(Image,topic,on_image,qos_profile_sensor_data)
+        ex=SingleThreadedExecutor();ex.add_node(node)
+        self.node=node;self.executor=ex;self.running=True
+        self.thread=threading.Thread(target=ex.spin,name='ros-depth-spin',daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.running=False
+        ex,self.executor=self.executor,None
+        node,self.node=self.node,None
+        if ex is not None:ex.shutdown(timeout_sec=1.)
+        if node is not None:node.destroy_node()
+        self.thread=None

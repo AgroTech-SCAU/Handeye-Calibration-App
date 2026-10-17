@@ -49,7 +49,7 @@ const state = {
   page:'connect', theme:localStorage.getItem('handeye-theme') || 'dark', language:initialLanguage, backend:'starting', runtime:null,
   data:{ config:{output_dir:'',camera_source:'ros',image_topic:'',camera_info_topic:'',camera_frame:'',robot_base_frame:'',robot_end_frame:'',camera_index:0,camera_width:640,camera_height:480,chessboard_cols:11,chessboard_rows:8,square_size_mm:15,board_type:'chessboard',charuco_squares_x:14,charuco_squares_y:9,charuco_marker_size_mm:15,charuco_dictionary:'DICT_5X5_100',charuco_min_corners:6,charuco_legacy_pattern:false,ros_input_type:'transform',pose_topic:'',joint_dof:5,joint_names:'',capture_topic:'',status_topic:'/handeye/status'}, camera:{open:false,board_found:false,width:640,height:480}, ros:{running:false,pose:null}, intrinsics:{count:0,exists:false}, handeye:{count:0,samples_exists:false}, validation:{reference_status:'unavailable',report:null,live_count:0,import_path:''}, output_dir:'' },
   arucoDictionaries:[], discoveredTopics:[], discoveredOnce:false, topicDetails:{}, autoFilled:new Set(), inspectingTopic:false, preview:'', logs:'', intrinsicQuality:'standard', handeyeQuality:'standard', sampleMode:'auto', manualType:'quaternion', angleUnit:'deg', solveMode:'robust',
-  intrinsicResult:null, solveResult:null, validationMode:'offline', validationThresholds:{translation_rms_mm:5,rotation_rms_deg:1,projection_rms_px:4}, selectedSampleIds:new Set(), busyJob:null, toolCompletions:new Map(), runtimeInstallLog:'', runtimeInstallState:'idle', expandedCards:loadExpandedCards()
+  intrinsicResult:null, solveResult:null, validationMode:'offline', spatialServoMode:'manual', validationThresholds:{translation_rms_mm:5,rotation_rms_deg:1,projection_rms_px:4}, selectedSampleIds:new Set(), busyJob:null, toolCompletions:new Map(), runtimeInstallLog:'', runtimeInstallState:'idle', expandedCards:loadExpandedCards()
 }
 
 const ARUCO_DICTIONARIES=[
@@ -193,6 +193,10 @@ function closeAppearanceMenu(){const menu=$('#appearance-menu');if(!menu)return;
 function prefersReducedMotion(){return matchMedia('(prefers-reduced-motion: reduce)').matches}
 async function transitionToPage(page){
   if(page===state.page)return
+  if(state.page==='validation'&&state.validationMode==='spatial'&&state.spatialServoMode==='auto'&&state.data.servo?.busy){
+    try{await api?.request('cancel_servo',{})}catch{}
+    toast(t('servo.cancelRequested'),'','warning')
+  }
   const epoch=++navigationEpoch
   const oldPage=$('#page > .page')
   if(oldPage&&!prefersReducedMotion()){
@@ -351,6 +355,15 @@ function renderConnect(){
       <div class="form-row" id="joint-settings" style="display:${kind==='joints'?'grid':'none'}">${field(t('field.jointDof'),'joint-dof',c.joint_dof,'number')}${field(t('field.jointNames'),'joint-names',c.joint_names||'','text',t('guide.jointNamesHint'))}</div>
     </div>
     ${modelPanel()}
+    <details class="interface-advanced"><summary>${t('servo.interfaceHeading')}</summary>
+      <div class="help">${t('servo.robotContract')}</div>
+      <div class="form-row" style="margin-top:12px">
+        <div class="field"><label for="interface-motion-action">${t('servo.motionAction')}</label><input class="control" id="interface-motion-action" value="${escapeHtml(c.motion_action||'/move_action')}"/></div>
+        <div class="field"><label for="interface-motion-group">${t('servo.motionGroup')}</label><input class="control" id="interface-motion-group" value="${escapeHtml(c.motion_group||'arm')}"/></div>
+      </div>
+      <div class="actions" style="margin-top:12px">${btn('servo-interface-save',t('servo.saveMotion'),'save')}${btn('servo-interface-check',t('servo.checkMotion'),'scan')}</div>
+      <div class="help">${t('servo.depthHint')}</div>
+    </details>
     ${capabilitiesPanel()}
     <details class="interface-advanced"><summary>${t('connect.advanced')}</summary><div class="form-row">${topicField(t('field.captureTopic'),'capture-topic',c.capture_topic||'','capture',true)}${topicField(t('field.statusTopic'),'status-topic',c.status_topic||'','status',true)}</div><div class="help">${t('connect.statusIsOutput')}</div></details>
     `,`<div class="actions connection-actions">${btn('discover-topics',t('action.discoverTopics'),'scan','')}${active?btn('disconnect-robot',t('action.disconnectRobot'),'square',''):btn('connect-robot',t('action.connectRobot'),'plug','primary')}</div><div class="connection-note" id="connection-message">${connected?t('connect.connectedHint'):t('connect.connectionHint')}</div>`,true)}
@@ -437,12 +450,14 @@ function validationReport(report){
   return `<div class="validation-status" style="--status-color:${badgeColor}"><b>${status}</b><span>${t('validation.reportCount',{count:rows.length})}</span></div>${metrics}${validationTrend(report)}<div class="validation-table-wrap"><table class="validation-table"><thead><tr><th>ID</th><th>${t('validation.translation')} mm</th><th>${t('validation.rotation')} °</th><th>${t('validation.projection')} px</th></tr></thead><tbody>${list}</tbody></table></div><p class="help">${t('validation.limitNote')}</p>`
 }
 function renderSpatialValidation(){
+ if(state.spatialServoMode==='auto')return renderRgbdServoValidation()
  const v=state.data.validation||{},sp=state.data.spatial||{},ref=sp.contact,m=state.data.robot_model||{}
  const ready=v.reference_status==='ready',links=m.fixed_links?.length?m.fixed_links:(m.links||[]),preferred=state.spatialLink|| (links.includes('tip')?'tip':links.includes('tool0')?'tool0':links[0]||'')
  if(!links.includes(preferred))state.spatialLink=preferred
  const errors=(sp.measurements||[])
  const rows=errors.map(r=>`<tr><td>#${r.id}</td><td>${n(r.error_xyz_mm?.[0],2)}</td><td>${n(r.error_xyz_mm?.[1],2)}</td><td>${n(r.error_xyz_mm?.[2],2)}</td><td>${n(r.error_mm,2)}</td></tr>`).join('')
  return `<div class="page">${pageHead(t('validation.kicker'),t('spatial.title'),t('spatial.subtitle'))}
+  <div class="validation-mode">${segmentedControl('spatial-submode',state.spatialServoMode,[['manual',t('servo.manual')],['auto',t('servo.automatic')]])}</div>
   ${card(t('spatial.modeTitle'),t('spatial.modeIntro'),'target',`<div class="interface-guide">${icon('info')}<span>${t('spatial.manualOnly')}</span></div><div class="help">${t('spatial.servoRequirements')}</div>`)}
   <div class="validation-mode">${segmentedControl('validation-mode','spatial',[['offline',t('validation.offline')],['live',t('validation.live')],['spatial',t('spatial.mode')]])}</div>
   <div class="grid preview-layout">${preview()}<div class="stack">
@@ -452,6 +467,38 @@ function renderSpatialValidation(){
   ${card(t('spatial.step3'),t('spatial.step3Desc'),'camera',`<div class="help">${t('spatial.measureHint')}</div><div class="grid two" style="margin-top:12px">${validationMetric(t('spatial.rms'),sp.rms_mm,'mm')}${validationMetric(t('spatial.max'),sp.max_mm,'mm')}</div><div class="help">${t('spatial.count',{count:sp.count||0})}</div>`,`<div class="actions">${btn('spatial-measure',t('spatial.measure'),'scan','primary',ref?'':'disabled')}${btn('spatial-clear',t('spatial.clear'),'trash','danger',ref?'':'disabled')}</div>`,true)}
   </div></div>
   ${card(t('spatial.report'),t('spatial.reportDesc'),'flask',`<div class="validation-table-wrap"><table class="validation-table"><thead><tr><th>ID</th><th>X mm</th><th>Y mm</th><th>Z mm</th><th>3D mm</th></tr></thead><tbody>${rows||`<tr><td colspan="5">${t('spatial.noData')}</td></tr>`}</tbody></table></div><div class="help">${t('spatial.limit')}</div>`)}
+ </div>`
+}
+
+function renderRgbdServoValidation(){
+ const cfg=state.data.config||{}, servo=state.data.servo||{},target=servo.target,model=state.data.robot_model||{},links=model.fixed_links?.length?model.fixed_links:(model.links||[])
+ const preferred=state.spatialLink&&links.includes(state.spatialLink)?state.spatialLink:(links.includes('tip')?'tip':links.includes('tool0')?'tool0':links[0]||'')
+ const status=servo.phase||'idle',working=servo.busy||['moving','observing','settling','cancelling'].includes(status)
+ const history=(servo.history||[]).slice(-12).reverse().map(row=>`<tr><td>${row.step}</td><td>${n(row.distance_mm,2)} mm</td><td>${(row.target_base_m||[]).map(x=>n(x,3)).join(', ')}</td></tr>`).join('')
+ return `<div class="page">${pageHead(t('validation.kicker'),t('spatial.title'),t('servo.pageHint'))}
+ <div class="validation-mode">${segmentedControl('spatial-submode',state.spatialServoMode,[['manual',t('servo.manual')],['auto',t('servo.automatic')]])}</div>
+ ${workflowHelp('servo.workflow')}
+ <div class="grid preview-layout">${preview()}<div class="stack">
+ ${card(t('servo.requirements'),t('servo.requirementsHint'),'info',`<div class="help">${t('servo.robotContract')}</div><div class="help">${t('servo.safety')}</div><div class="help">${t('servo.depthHint')}</div>`)}
+ ${card(t('servo.configure'),t('servo.configureHint'),'plug',`
+ <div class="field"><label>${t('servo.depthTopic')}</label><input class="control" id="servo-depth-topic" value="${escapeHtml(cfg.aligned_depth_topic||'')}" placeholder="/camera/aligned_depth_to_color/image_raw"/></div>
+ <div class="help">${servo.depth_ready?t('servo.depthReady'):t('servo.depthMissing')}</div>
+ <div class="form-row"><div class="field"><label>${t('servo.motionAction')}</label><input class="control" id="servo-motion-action" value="${escapeHtml(cfg.motion_action||'/move_action')}"/></div><div class="field"><label>${t('servo.motionGroup')}</label><input class="control" id="servo-motion-group" value="${escapeHtml(cfg.motion_group||'arm')}"/></div></div>
+ <div class="help">${t('servo.motionHelp')}</div>`, `<div class="actions">${btn('servo-connect-depth',t('servo.connectDepth'),'camera','primary',working?'disabled':'')}${btn('servo-save-motion',t('servo.saveMotion'),'save','',working?'disabled':'')}${btn('servo-check-motion',t('servo.checkMotion'),'scan','',working?'disabled':'')}</div>`,true)}
+ ${card(t('servo.target'),t('servo.targetHint'),'target',`
+ <div class="field"><label>${t('servo.targetLink')}</label><select class="control" id="servo-target-link">${links.map(x=>`<option value="${escapeHtml(x)}" ${x===preferred?'selected':''}>${escapeHtml(x)}</option>`).join('')}</select></div>
+ <div class="pose-box" id="servo-target-info">${target?`${t('servo.targetXYZ')} ${target.point_base_m.map(x=>n(x,4)).join(' / ')} m\nRGB (${n(target.u,0)}, ${n(target.v,0)}) · ${n(target.depth_m,3)} m`:t('servo.noTarget')}</div>
+ <div class="help">${t('servo.pickHint')}</div>
+ <div class="help">${t('servo.orientation')}</div>
+ `,`<div class="actions">${btn('servo-clear-selection',t('servo.clearSelection'),'trash','',working?'disabled':'')}</div>`)}
+ ${card(t('servo.execute'),t('servo.executeHint'),'play',`
+ <div class="form-row three">${field(t('servo.step'),'servo-step',15,'number')}${field(t('servo.clearance'),'servo-clearance',35,'number')}${field(t('servo.maxSteps'),'servo-max-steps',8,'number')}</div>
+ <label class="servo-safety-label"><input type="checkbox" id="servo-safety-confirm" ${working?'disabled':''}> ${t('servo.acknowledge')}</label>
+ <div class="servo-run-status" id="servo-run-status"><b>${escapeHtml(status)}</b><span>${escapeHtml(servo.message||'')}</span></div>
+ <div class="help">${t('servo.clearanceHint')}</div>
+ `,`<div class="actions">${btn('servo-start',t('servo.start'),'play','primary',target&&!working?'':'disabled')}${btn('servo-cancel',t('servo.cancel'),'square','danger',working?'':'disabled')}</div>`,true)}
+ </div></div>
+ ${card(t('servo.results'),t('servo.resultsHint'),'flask',`<div class="validation-table-wrap"><table class="validation-table"><thead><tr><th>#</th><th>${t('servo.remaining')}</th><th>${t('servo.position')}</th></tr></thead><tbody id="servo-history">${history||`<tr><td colspan="3">${t('servo.noHistory')}</td></tr>`}</tbody></table></div><div class="help">${t('servo.notAbsolute')}</div>`)}
  </div>`
 }
 
@@ -756,8 +803,88 @@ function bindPage(){
     $('#board-charuco-fields').style.display=charuco?'block':'none'
     if(charuco&&Number($('#square-mm').value)<=Number($('#charuco-marker').value))$('#square-mm').value=20
   })
-  bindSegment('validation-mode','validationMode',()=>{void api?.request('set_validation_overlay',{enabled:state.validationMode==='live',spatial:state.validationMode==='spatial'});renderPage(false)});
+  bindSegment('spatial-submode','spatialServoMode',()=>{if(state.data.servo?.busy&&state.spatialServoMode!=='auto')void api?.request('cancel_servo',{});renderPage(false)});
+  bindSegment('validation-mode','validationMode',()=>{if(state.data.servo?.busy&&state.validationMode!=='spatial')void api?.request('cancel_servo',{});void api?.request('set_validation_overlay',{enabled:state.validationMode==='live',spatial:state.validationMode==='spatial'});renderPage(false)});
   bindSegment('intrinsic-quality','intrinsicQuality',updateIntrinsicQualityView);bindSegment('handeye-quality','handeyeQuality',updateHandeyeQualityView);bindSegment('sample-mode','sampleMode',updateSampleModeView);bindSegment('solve-mode','solveMode')
+  $('#servo-interface-save')?.addEventListener('click',async()=>{
+    try{const r=await request('set_servo_motion_config',{action:$('#interface-motion-action').value,group:$('#interface-motion-group').value});await refreshState();toast(t('servo.saved'),'','success')}
+    catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
+  $('#servo-interface-check')?.addEventListener('click',async()=>{
+    try{const result=await request('check_servo_motion',{});toast(result.available?t('servo.motionAvailable'):t('servo.motionUnavailable'),result.reason,result.available?'success':'warning')}
+    catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
+  $('#servo-target-link')?.addEventListener('change',e=>{state.spatialLink=e.target.value})
+  $('#servo-connect-depth')?.addEventListener('click',async()=>{
+    try{await request('connect_servo_depth',{topic:$('#servo-depth-topic').value},t('servo.connectDepth'));await refreshState();toast(t('servo.depthReady'),'','success')}
+    catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
+  $('#servo-check-motion')?.addEventListener('click',async()=>{
+    try{const result=await request('check_servo_motion',{});toast(result.available?t('servo.motionAvailable'):t('servo.motionUnavailable'),result.reason,result.available?'success':'warning')}
+    catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
+  $('#servo-save-motion')?.addEventListener('click',async()=>{
+    try{await request('set_servo_motion_config',{action:$('#servo-motion-action').value,group:$('#servo-motion-group').value});await refreshState();toast(t('servo.saved'),'','success')}
+    catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
+  const servoSurface=$('#preview-surface')
+  if(servoSurface&&state.page==='validation'&&state.validationMode==='spatial'&&state.spatialServoMode==='auto'){
+    servoSurface.classList.add('servo-pick-mode')
+    const toUV=(event,rect)=>({u:(event.clientX-rect.left)/rect.width,v:(event.clientY-rect.top)/rect.height})
+    let startPoint=null,selection=null
+    servoSurface.addEventListener('pointerdown',event=>{
+      const img=$('.preview-image',servoSurface)
+      if(!img?.naturalWidth||state.data.servo?.busy||event.button!==0)return
+      const rect=img.getBoundingClientRect()
+      if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)return
+      startPoint=toUV(event,rect)
+      selection=document.createElement('div');selection.className='servo-selection-box'
+      servoSurface.appendChild(selection)
+      servoSurface.setPointerCapture(event.pointerId)
+      event.preventDefault()
+    })
+    servoSurface.addEventListener('pointermove',event=>{
+      if(!startPoint||!selection)return
+      const img=$('.preview-image',servoSurface),rect=img.getBoundingClientRect(),host=servoSurface.getBoundingClientRect()
+      const at=toUV(event,rect)
+      const x1=Math.min(startPoint.u,at.u),y1=Math.min(startPoint.v,at.v)
+      const x2=Math.max(startPoint.u,at.u),y2=Math.max(startPoint.v,at.v)
+      selection.style.left=`${rect.left-host.left+x1*rect.width}px`
+      selection.style.top=`${rect.top-host.top+y1*rect.height}px`
+      selection.style.width=`${(x2-x1)*rect.width}px`
+      selection.style.height=`${(y2-y1)*rect.height}px`
+    })
+    servoSurface.addEventListener('pointerup',async event=>{
+      if(!startPoint)return
+      const img=$('.preview-image',servoSurface),rect=img.getBoundingClientRect()
+      const at=toUV(event,rect)
+      selection?.remove();selection=null
+      const x0=startPoint.u,y0=startPoint.v;startPoint=null
+      const width=Math.abs(x0-at.u),height=Math.abs(y0-at.v)
+      const roi=width*rect.width>=8&&height*rect.height>=8?{width,height}:null
+      const u=(x0+at.u)/2,v=(y0+at.v)/2
+      if(u<=0||u>=1||v<=0||v>=1)return
+      const link=$('#servo-target-link')?.value
+      if(!link){toast(t('guide.modelMissing'),'','warning');return}
+      try{await request('select_servo_target',{u,v,link,roi});await refreshState();toast(t('servo.selected'),'','success')}
+      catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+    })
+    servoSurface.addEventListener('pointercancel',()=>{startPoint=null;selection?.remove();selection=null})
+  }
+  $('#servo-clear-selection')?.addEventListener('click',async()=>{
+    try{await request('clear_servo_target',{});await refreshState()}catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
+  $('#servo-start')?.addEventListener('click',async()=>{
+    if(!$('#servo-safety-confirm')?.checked){toast(t('servo.needSafety'),'','danger');return}
+    const step_m=Number($('#servo-step').value)/1000,clearance_m=Number($('#servo-clearance').value)/1000,max_steps=Number($('#servo-max-steps').value)
+    if(!window.confirm(t('servo.confirmMotion')))return
+    try{await request('start_servo',{step_m,clearance_m,max_steps,confirm:'I_UNDERSTAND_ROBOT_MOTION'});await refreshState()}
+    catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
+  $('#servo-cancel')?.addEventListener('click',async()=>{
+    try{await request('cancel_servo',{});toast(t('servo.cancelRequested'),'','warning');await refreshState()}
+    catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
   $('#spatial-tool-link')?.addEventListener('change',e=>{state.spatialLink=e.target.value})
   $('#spatial-corner-id')?.addEventListener('change',e=>{state.spatialCorner=Number(e.target.value)})
   $('#spatial-connect')?.addEventListener('click',()=>navigate('connect'))
@@ -971,8 +1098,9 @@ function updatePreviewFrame(data){
     pendingPreview=null
     if(!frame)return
     const surface=$('#preview-surface')
+    let img=null
     if(surface){
-      let img=$('.preview-image',surface)
+      img=$('.preview-image',surface)
       if(!img){surface.innerHTML='<img class="preview-image" alt="Camera preview" decoding="async">';img=$('.preview-image',surface)}
       if(img&&frame.jpeg)img.src='data:image/jpeg;base64,'+frame.jpeg
     }
@@ -980,6 +1108,16 @@ function updatePreviewFrame(data){
     if(live)live.innerHTML=`${dot('success')} ${t('status.live')}`
     const size=$('#preview-size')
     if(size)size.textContent=`${frame.width||640} × ${frame.height||480}`
+    if(state.page==='validation'&&state.validationMode==='spatial'&&state.spatialServoMode==='auto'){
+      const target=state.data.servo?.target
+      let marker=surface?$('.servo-target-marker',surface):null
+      if(target&&surface&&img&&img.getBoundingClientRect().width>0){
+        if(!marker){marker=document.createElement('div');marker.className='servo-target-marker';marker.textContent='+';surface.appendChild(marker)}
+        const rect=img.getBoundingClientRect(),host=surface.getBoundingClientRect()
+        marker.style.left=`${rect.left-host.left+(target.u/(frame.width||640))*rect.width}px`
+        marker.style.top=`${rect.top-host.top+(target.v/(frame.height||480))*rect.height}px`
+      }else marker?.remove()
+    }
     const board=$('#board-live')
     if(board){board.textContent=frame.board_found?t('board.detectedCount',{count:frame.corner_count||0}):t('status.notDetected');board.style.color=frame.board_found?'var(--success)':'var(--warning)'}
   })
@@ -993,7 +1131,7 @@ Python : ${rt.python||t('common.unknown')}
 Interface: HandEye`;const log=$('#runtime-install-log');if(log){log.textContent=state.runtimeInstallLog.slice(-5000);log.classList.toggle('hidden',!state.runtimeInstallLog)}const install=$('#install-runtime');if(install)install.disabled=state.runtimeInstallState==='running';const installLabel=$('#install-runtime-label');if(installLabel)installLabel.textContent=state.runtimeInstallState==='running'?t('runtime.installing'):installed?t('runtime.repair'):t('runtime.install')}
 function appendBackendLog(text){state.logs+=text||'';const log=$('#log-box');if(log){log.textContent=state.logs;log.scrollTop=log.scrollHeight}}
 async function refreshState(){if(!api)return;try{state.data=await api.request('get_state');updateShell();renderPage(false)}catch(e){state.backend='error';updateShell()}}
-function handleEvent(msg){const {event,data}=msg;if(event==='state'){state.data=data;updateShell()}else if(event==='preview'){updatePreviewFrame(data)}else if(event==='pose'){updatePoseView(data)}else if(event==='log'){appendBackendLog(data.text||'')}else if(event==='error'){toast('Backend',data?.message||t('error.unknown'),'danger')}else if(event==='camera_metadata'){state.data.camera={...(state.data.camera||{}),frame_id:data?.frame_id||state.data.camera?.frame_id,width:data?.width||state.data.camera?.width,height:data?.height||state.data.camera?.height};if(state.page==='connect')applyTopicDetails('image',data)}else if(event==='tool_done'){completeCalculation(data)}}
+function handleEvent(msg){const {event,data}=msg;if(event==='state'){state.data=data;updateShell()}else if(event==='preview'){updatePreviewFrame(data)}else if(event==='pose'){updatePoseView(data)}else if(event==='log'){appendBackendLog(data.text||'')}else if(event==='error'){toast('Backend',data?.message||t('error.unknown'),'danger')}else if(event==='camera_metadata'){state.data.camera={...(state.data.camera||{}),frame_id:data?.frame_id||state.data.camera?.frame_id,width:data?.width||state.data.camera?.width,height:data?.height||state.data.camera?.height};if(state.page==='connect')applyTopicDetails('image',data)}else if(event==='servo_progress'){state.data.servo={...(state.data.servo||{}),...data};const box=$('#servo-run-status');if(box)box.innerHTML=`<b>${escapeHtml(data.phase||'')}</b><span>${escapeHtml(data.message||'')}</span>`;const cancel=$('#servo-cancel');if(cancel)cancel.disabled=!data.busy;if(['failed','cancelled','completed','incomplete'].includes(data.phase))void refreshState()}else if(event==='servo_feedback'){const box=$('#servo-run-status span');if(box&&data.text)box.textContent=data.text}else if(event==='servo_finished'){toast(t('servo.completed'),data.report_path||'',data.status==='failed'?'danger':data.status==='cancelled'?'warning':'success');void refreshState()}else if(event==='tool_done'){completeCalculation(data)}}
 
 async function boot(){document.documentElement.lang=state.language;shell();applyTheme(state.theme);renderPage(false);syncResponsiveShell();if(!responsiveListenerBound){responsiveListenerBound=true;window.addEventListener('resize',syncResponsiveShell,{passive:true})}if(!api){state.backend='unavailable';updateShell();toast(t('toast.bridgeMissing'),t('toast.startApp'),'warning');return}api.onEvent?.(handleEvent);api.onRuntime?.(m=>{state.backend=m.state||'unknown';state.runtime={...(state.runtime||{}),...m};updateShell();updateRuntimeView()});api.onRuntimeInstall?.(m=>{if(m.state==='starting')state.runtimeInstallState='running';if(m.state==='log')state.runtimeInstallLog+=(m.text||'');if(m.state==='done')state.runtimeInstallState='done';if(m.state==='error')state.runtimeInstallState='error';updateRuntimeView()});api.onStderr?.(t=>appendBackendLog('[backend] '+t));try{state.runtime=await api.runtimeInfo();const ping=await api.request('ping');state.backend=ping.pong?'ready':'error';state.data=await api.request('get_state')}catch(e){state.backend='error';toast(t('toast.backendStartFailed'),e.message,'danger')}updateShell();renderPage(false)}
 boot()

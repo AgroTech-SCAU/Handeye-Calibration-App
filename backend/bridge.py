@@ -85,7 +85,9 @@ def available_aruco_dictionaries():
     return [name for name in names if hasattr(aruco, name)]
 from capture_sync import PoseHistory
 from config import AppConfig
-from ros_interface import RosInterface, RosCameraInterface, RosJoints, RosPose, discover_ros_topics, inspect_ros_topic
+from ros_interface import RosInterface, RosCameraInterface, RosDepthInterface, RosJoints, RosPose, discover_ros_topics, inspect_ros_topic
+from servo_engine import depth_at, pixel_to_point, camera_to_base, project_base, make_template, track_template, limited_step
+from ros_motion import MoveGroupMotion
 
 
 class JsonOut:
@@ -135,6 +137,16 @@ class Bridge:
                 self.robot_model_error = str(exc)
         self.spatial_contact = None
         self.spatial_measurements = []
+        self.servo_target = None
+        self.servo_motion = None
+        self.servo_thread = None
+        self.servo_cancel = threading.Event()
+        self.servo_progress = {'phase':'idle','step':0,'message':'尚未选择目标'}
+        self.servo_history = []
+        self.depth_frame = None
+        self.depth_stamp = None
+        self.depth_frame_id = ''
+        self.depth_received_at = None
         # The original main-branch GUI intentionally leaves the optional ROS
         # capture trigger empty on first run; preserve that behavior here
         if first_run:
@@ -188,6 +200,7 @@ class Bridge:
             self._on_ros_error,
         )
         self.ros_camera = RosCameraInterface(self._on_image, self._on_camera_info, self._on_ros_error)
+        self.ros_depth = RosDepthInterface(self._on_depth, self._on_ros_error)
         self._restore_validation_session()
         self._camera_thread.start()
 
@@ -268,6 +281,8 @@ class Bridge:
                 'overlay_enabled': self.validation_overlay_enabled}
 
     def _invalidate_validation(self):
+        self._cancel_servo_internal()
+        self.servo_target=None
         ref, _, report = self._validation_paths()
         ref.unlink(missing_ok=True)
         report.unlink(missing_ok=True)
@@ -321,6 +336,9 @@ class Bridge:
                 "camera_source": self.config.camera_source,
                 "image_topic": self.config.image_topic,
                 "camera_info_topic": self.config.camera_info_topic,
+                "aligned_depth_topic": self.config.aligned_depth_topic,
+                "motion_action": self.config.motion_action,
+                "motion_group": self.config.motion_group,
                 "camera_frame": self.config.camera_frame,
                 "robot_base_frame": pose["frame_id"] if self.config.ros_input_type == "transform" and pose is not None else ("" if self.config.ros_input_type == "transform" else self.config.robot_base_frame),
                 "robot_end_frame": pose["child_frame_id"] if self.config.ros_input_type == "transform" and pose is not None else ("" if self.config.ros_input_type == "transform" else self.config.robot_end_frame),
@@ -341,6 +359,8 @@ class Bridge:
             },
             "camera": {
                 "open": self.camera_open,
+                "depth_ready": bool(self.depth_received_at and time.monotonic()-self.depth_received_at < 1.5),
+                "depth_frame": self.depth_frame_id,
                 "receiving": bool(self.camera_open and self.current_frame is not None and
                                   self.frame_received_at is not None and
                                   time.monotonic()-self.frame_received_at < 1.5),
@@ -376,6 +396,7 @@ class Bridge:
             },
             "output_dir": str(out),
             "robot_model": self._model_state(),
+            "servo": self._servo_state(),
             "spatial": self._spatial_state(),
             "validation": self._validation_state(),
             "last_error": self.last_error,
@@ -395,6 +416,21 @@ class Bridge:
             except ValueError:
                 data['fixed_links'] = []
         return data
+
+    def _servo_state(self):
+        t=self.servo_target
+        return dict(phase=self.servo_progress.get('phase','idle'),step=self.servo_progress.get('step',0),
+            message=self.servo_progress.get('message',''),target=({k:v for k,v in t.items() if k!='template'} if t else None),
+            history=self.servo_history[-40:], action=self.config.motion_action, group=self.config.motion_group,
+            depth_ready=bool(self.depth_received_at and time.monotonic()-self.depth_received_at<1.5),
+            busy=bool(self.servo_thread and self.servo_thread.is_alive()))
+
+    def _on_depth(self, frame, stamp, frame_id):
+        with self.frame_lock:
+            self.depth_frame=frame
+            self.depth_stamp=stamp if stamp>0 else None
+            self.depth_frame_id=frame_id
+            self.depth_received_at=time.monotonic()
 
     def _spatial_state(self):
         contact=self.spatial_contact
@@ -1058,6 +1094,8 @@ class Bridge:
             "transform": "geometry_msgs/msg/TransformStamped",
             "joints": "sensor_msgs/msg/JointState",
         }
+        if self.servo_thread and self.servo_thread.is_alive():
+            raise ValueError("运动期间不能重连机器人，请先取消并确认机械臂停止")
         if c.camera_source == "ros" and not c.image_topic.strip():
             raise ValueError("请选择相机 Image 话题")
         if c.ros_input_type != "tf" and not c.pose_topic.strip():
@@ -1105,6 +1143,7 @@ class Bridge:
 
     @serialized
     def disconnect_robot(self, _params: dict[str, Any]) -> dict[str, Any]:
+        self._cancel_servo_internal()
         if self.camera_open:
             self.close_camera({})
         if self.ros.running or self.latest_pose is not None:
@@ -1125,6 +1164,12 @@ class Bridge:
 
     @serialized
     def close_camera(self, _params: dict[str, Any]) -> dict[str, Any]:
+        self._cancel_servo_internal()
+        self.ros_depth.stop()
+        self.depth_frame = None
+        self.depth_stamp = None
+        self.depth_received_at = None
+        self.depth_frame_id = ""
         self.ros_camera.stop()
         self.camera.close()
         self.camera_open = False
@@ -1859,6 +1904,275 @@ class Bridge:
         path.write_text(yaml.safe_dump(export, sort_keys=False, allow_unicode=True), encoding='utf-8')
         return {"path": str(path), "result": export}
 
+    def _cancel_servo_internal(self):
+        self.servo_cancel.set()
+        if self.servo_motion:
+            self.servo_motion.cancel()
+
+    @serialized
+    def connect_servo_depth(self, params):
+        if self.config.camera_source!='ros':
+            raise ValueError('RGB-D 视觉伺服需要 ROS2 彩色图像话题，V4L2 模式不可用')
+        topic=str(params.get('topic',self.config.aligned_depth_topic)).strip()
+        if not topic.startswith('/'):
+            raise ValueError('请选择对齐到彩色光学 Frame 的深度 Image 话题')
+        if self.servo_thread and self.servo_thread.is_alive():
+            raise ValueError('运动中不能切换深度流')
+        if self.ros_depth.running:self.ros_depth.stop()
+        if not self.mock:
+            graph={x['topic']:x['types'] for x in discover_ros_topics()}
+            if 'sensor_msgs/msg/Image' not in graph.get(topic,[]):
+                raise ValueError('深度话题不存在或不是 sensor_msgs/msg/Image，请先搜索话题')
+            self.ros_depth.start(topic)
+        self.config.aligned_depth_topic=topic
+        self.config.save(self.config_path)
+        self.servo_target=None
+        return {'topic':topic,'ready':self.ros_depth.running}
+
+    def _servo_capture(self, after=0., tracking=False):
+        if self.config.camera_source!='ros':
+            raise ValueError('RGB-D 伺服只支持 ROS2 Image')
+        frozen=load_frozen(self._validation_paths()[0])
+        if not self.camera_open or not self.ros.running:
+            raise ValueError('请先连接机械臂与 RGB 相机')
+        with self.frame_lock:
+            rgb=self.current_frame.copy() if self.current_frame is not None else None
+            depth=self.depth_frame.copy() if self.depth_frame is not None else None
+            rgb_time=self.frame_received_at;depth_time=self.depth_received_at
+            rgb_stamp=self.frame_ros_stamp;depth_stamp=self.depth_stamp
+            rgb_frame=self.frame_id;depth_frame=self.depth_frame_id
+        now=time.monotonic()
+        if rgb is None or depth is None or not rgb_time or not depth_time or now-rgb_time>.35 or now-depth_time>.35:
+            raise ValueError('RGB 或对齐深度图已经过期')
+        if after and (rgb_time<=after or depth_time<=after):
+            raise ValueError('等待机械臂停稳后的新 RGB-D 数据')
+        if rgb.shape[:2]!=depth.shape:
+            raise ValueError('深度图与 RGB 分辨率不同，请由相机端发布彩色对齐深度')
+        if rgb_frame!=depth_frame or rgb_frame!=frozen['camera_frame']:
+            raise ValueError(f'深度、RGB 与冻结手眼矩阵的光学 Frame 不同: {depth_frame} / {rgb_frame} / {frozen["camera_frame"]}')
+        if rgb_stamp is None or depth_stamp is None or abs(rgb_stamp-depth_stamp)>.05:
+            raise ValueError('RGB 与 Depth 时间戳相差超过 50ms，请相机端完成同步')
+        k,d,size=__import__('validation_engine')._intrinsics(frozen)
+        if [rgb.shape[1],rgb.shape[0]]!=size:
+            raise ValueError('实时 RGB 分辨率与求解时相机内参不一致')
+        info=self.camera_info
+        if info is None:
+            raise ValueError('RGB-D 视觉伺服必须订阅 ROS2 CameraInfo，不能只凭历史内参文件推断当前光学模型')
+        if info.get('frame_id')!=rgb_frame or [info.get('image_width'),info.get('image_height')]!=size:
+            raise ValueError('CameraInfo 的光学 Frame 或图像尺寸与实时 RGB 不匹配')
+        live_k=np.asarray(info['camera_matrix']['data'],dtype=float).reshape(3,3)
+        if np.max(np.abs(live_k[:2,:2]-k[:2,:2]))>max(2.,float(np.max(np.abs(k[:2,:2])))*.02) or np.max(np.abs(live_k[:2,2]-k[:2,2]))>3.:
+            raise ValueError('ROS2 CameraInfo 与手眼标定冻结内参差异过大，请确认当前相机模式与内参来源')
+        if not self.robot_model:
+            raise ValueError('请导入具有目标 Link 的 Description / URDF')
+        entry,dt=self.pose_history.match(rgb_time,now)
+        pose=self.latest_pose
+        if pose is None or (pose.frame_id,pose.child_frame_id)!=(frozen['robot_base_frame'],frozen['robot_end_frame']):
+            raise ValueError('机器人 Frame 与冻结手眼矩阵不一致')
+        if entry['robot_timestamp'] and abs(float(entry['robot_timestamp'])-rgb_stamp)>.10:
+            raise ValueError('机器人位姿与 RGB 图像 ROS 时间戳不匹配')
+        base_end=self._spatial_base_tool(entry['pose'])
+        x=np.asarray(frozen['handeye_transform'],dtype=float)
+        return dict(rgb=rgb,depth=depth,k=k,d=d,rgb_time=rgb_time,stamp=rgb_stamp,
+            base_end=base_end,x=x,frozen=frozen,dt_ms=dt)
+
+    def _servo_tip_matrix(self,sample,link):
+        end=sample['frozen']['robot_end_frame']
+        offset=self.robot_model.transform(end,link,only_fixed=True)
+        return sample['base_end']@offset
+
+    @serialized
+    def select_servo_target(self,params):
+        if self.servo_thread and self.servo_thread.is_alive():
+            raise ValueError('运动期间不能重新选择目标')
+        snap=self._servo_capture()
+        u=float(params.get('u',-1))*snap['rgb'].shape[1]
+        v=float(params.get('v',-1))*snap['rgb'].shape[0]
+        roi=params.get('roi') or {}
+        if roi:
+            rw=float(roi.get('width',0))*snap['rgb'].shape[1]
+            rh=float(roi.get('height',0))*snap['rgb'].shape[0]
+            if rw<8 or rh<8 or rw>180 or rh>180:
+                raise ValueError('目标框的边长必须为 8～180 像素，请重新框选')
+        else:
+            rw=rh=0
+        z=depth_at(snap['depth'],u,v)
+        pt=pixel_to_point(u,v,z,snap['k'],snap['d'])
+        base=camera_to_base(pt,snap['base_end'],snap['x'])
+        tool=str(params.get('link',''))
+        tip=self._servo_tip_matrix(snap,tool)
+        template=make_template(snap['rgb'],u,v,radius=min(24,max(12,int(min(rw,rh)*.38))) if roi else 16)
+        # Restrict ROI and approach to measured 3D target, not a stale pose
+        self.servo_target=dict(u=round(u,2),v=round(v,2), depth_m=z,
+            point_base_m=base.tolist(),link=tool,template=template,
+            created_at=time.time(),stamp=snap['stamp'],frame=snap['frozen']['camera_frame'],
+            roi_px=[round(rw),round(rh)] if roi else None,
+            tip_m=tip[:3,3].tolist(),distance_m=float(np.linalg.norm(base-tip[:3,3])))
+        self.servo_progress={'phase':'selected','step':0,'message':'目标已定位，请检查图像中的目标和目标 Link，再确认运动'}
+        self.servo_history=[]
+        self._emit_state()
+        return {'target':{k:v for k,v in self.servo_target.items() if k!='template'}}
+
+    @serialized
+    def clear_servo_target(self, _params):
+        if self.servo_thread and self.servo_thread.is_alive():
+            raise ValueError('机械臂运动期间不允许修改目标，请先取消任务')
+        self.servo_target=None
+        self.servo_history=[]
+        self.servo_progress={'phase':'idle','step':0,'message':'等待框选目标'}
+        self._emit_state()
+        return {'cleared':True}
+
+    @serialized
+    def set_servo_motion_config(self, params):
+        if self.servo_thread and self.servo_thread.is_alive():
+            raise ValueError('运动时不能修改 Action 配置')
+        name=str(params.get('action','')).strip();group=str(params.get('group','')).strip()
+        if not name.startswith('/') or not group or any(x.isspace() for x in group):
+            raise ValueError('运动 Action 必须是绝对 ROS2 名称，规划组不能为空')
+        self.config.motion_action=name;self.config.motion_group=group
+        self.config.save(self.config_path)
+        self.servo_target=None
+        return {'action':name,'group':group}
+
+    def _servo_observe(self, previous, after=0.):
+        sample=self._servo_capture(after=after)
+        target=self.servo_target
+        pixel=project_base(previous,sample['base_end'],sample['x'],sample['k'],sample['d'])
+        u,v,score=track_template(sample['rgb'],target['template'],*pixel)
+        z=depth_at(sample['depth'],u,v)
+        measured=camera_to_base(pixel_to_point(u,v,z,sample['k'],sample['d']),sample['base_end'],sample['x'])
+        if np.linalg.norm(measured-previous)>.045:
+            raise ValueError('目标重新识别的位置发生超过 45mm 跳变，停止运动')
+        target['u']=round(float(u),2)
+        target['v']=round(float(v),2)
+        target['depth_m']=float(z)
+        target['tracking_score']=float(score)
+        return sample,measured,score
+
+    def _servo_emit(self,phase,step,message):
+        self.servo_progress=dict(phase=phase,step=step,message=message)
+        self._emit('servo_progress',self._servo_state())
+
+    def _servo_worker(self, params):
+        motion=None
+        try:
+            link=self.servo_target['link']
+            target=np.asarray(self.servo_target['point_base_m'],float)
+            step=float(params['step_m']);clearance=float(params['clearance_m']);max_steps=int(params['max_steps'])
+            motion=MoveGroupMotion(self.config.motion_action,self.config.motion_group,timeout=18.,velocity=.06)
+            self.servo_motion=motion
+            for index in range(max_steps):
+                if self.servo_cancel.is_set():raise RuntimeError('伺服已取消')
+                self._servo_emit('observing',index,'正在检查停稳位姿、同步深度和目标跟踪')
+                if index==0:
+                    if time.time()-self.servo_target['created_at']>15:
+                        raise ValueError('目标选择已超过 15 秒，请重新框选')
+                    sample,current_target,score=self._servo_observe(target)
+                    target=current_target
+                else:
+                    deadline=time.monotonic()+3.
+                    while True:
+                        if self.servo_cancel.is_set():raise RuntimeError('伺服已取消')
+                        try:
+                            sample,current_target,score=self._servo_observe(target,after=post_motion)
+                            break
+                        except ValueError as exc:
+                            if time.monotonic()>deadline:raise RuntimeError(f'运动后视觉确认失败: {exc}')
+                            time.sleep(.12)
+                    target=current_target
+                tip=self._servo_tip_matrix(sample,link)
+                next_xyz,distance,done=limited_step(tip[:3,3],target,step,clearance)
+                record={'step':index+1,'distance_mm':round(distance*1000,2),'target_base_m':target.tolist(),
+                        'tip_base_m':tip[:3,3].tolist(),'stamp':sample['stamp'],'depth_frame':self.depth_frame_id}
+                self.servo_history.append(record)
+                if done:
+                    self._servo_emit('completed',index, f'已到达距离目标 {distance*1000:.1f} mm 的安全范围，未下发接触动作')
+                    break
+                self._servo_emit('moving',index+1,f'向机器人 {self.config.motion_action} 提交单步 {step*1000:.0f} mm 以内的规划运动')
+                pose=pose_from_matrix(tip)
+                motion.execute(sample['frozen']['robot_base_frame'],link,next_xyz,pose[3:],
+                    feedback=lambda msg:self._emit('servo_feedback',{'text':msg,'step':index+1}))
+                post_motion=time.monotonic()+.4
+                self._servo_emit('settling',index+1,'运动已返回成功，等待新的停稳 RGB-D 观测')
+                time.sleep(.4)
+            else:
+                self._servo_emit('incomplete',max_steps,'达到迭代次数限制，请检查剩余误差后重新选择目标')
+            report=dict(kind='rgbd_discrete_visual_servo',result=self.servo_progress,
+                action=self.config.motion_action,group=self.config.motion_group,link=link,
+                clearance_mm=clearance*1000,history=self.servo_history,
+                note='仅为运动学估计误差，不是独立接触或计量精度')
+            path=self._paths()[0]/'rgbd_servo_report.yaml'
+            path.write_text(yaml.safe_dump(report,sort_keys=False,allow_unicode=True),encoding='utf-8')
+            self._emit('servo_finished',{'report_path':str(path),'status':self.servo_progress['phase']})
+        except Exception as exc:
+            self._servo_emit('cancelled' if self.servo_cancel.is_set() else 'failed',
+                self.servo_progress.get('step',0),str(exc))
+            try:
+                report=dict(kind='rgbd_discrete_visual_servo',result=self.servo_progress,
+                    action=self.config.motion_action,group=self.config.motion_group,
+                    link=self.servo_target['link'] if self.servo_target else '',
+                    history=self.servo_history,
+                    note='仅为机器人运动学与 RGB-D 定位估计，不能作为实际接触精度')
+                path=self._paths()[0]/'rgbd_servo_report.yaml'
+                path.write_text(yaml.safe_dump(report,sort_keys=False,allow_unicode=True),encoding='utf-8')
+                self._emit('servo_finished',{'report_path':str(path),'status':self.servo_progress['phase']})
+            except Exception:
+                pass
+        finally:
+            self.servo_motion=None
+            self._emit_state()
+
+    def check_servo_motion(self, _params):
+        if self.mock:
+            return {'available':False,'reason':'演示模式未连接真实 MoveGroup Action'}
+        try:
+            import rclpy
+            from rclpy.action import ActionClient
+            from moveit_msgs.action import MoveGroup
+        except ImportError:
+            return {'available':False,'reason':'缺少 ROS2 moveit_msgs/action/MoveGroup，请安装与 ROS2 发行版匹配的 MoveIt2'}
+        if not rclpy.ok():rclpy.init(args=None)
+        node=rclpy.create_node('handeye_servo_action_check')
+        client=ActionClient(node,MoveGroup,self.config.motion_action)
+        try:
+            available=client.wait_for_server(timeout_sec=1.0)
+            return {'available':bool(available),'action':self.config.motion_action,
+                    'group':self.config.motion_group,
+                    'reason':'Action 服务已发现，实际规划组与工具 Link 是否可用仍需由机器人执行时验证' if available else '未发现指定 MoveGroup Action，请检查机器人端 MoveIt2 与 Action 名称'}
+        finally:
+            client.destroy();node.destroy_node()
+
+    @serialized
+    def start_servo(self,params):
+        if self.mock:
+            raise ValueError('演示模式禁止下发机械臂运动')
+        if self.servo_thread and self.servo_thread.is_alive():
+            raise ValueError('已有伺服任务在运行')
+        if not self.servo_target:
+            raise ValueError('请先在实时 RGB 图像上选择三维目标点')
+        if self.active_job:
+            raise ValueError('当前正在进行标定计算，禁止同时执行伺服')
+        step=float(params.get('step_m',.015))
+        clearance=float(params.get('clearance_m',.035))
+        count=int(params.get('max_steps',8))
+        if not (.003<=step<=.03 and .025<=clearance<=.20 and 1<=count<=20):
+            raise ValueError('单步距离 3~30mm，安全间距 25~200mm，迭代次数 1~20')
+        if params.get('confirm')!='I_UNDERSTAND_ROBOT_MOTION':
+            raise ValueError('必须确认运动可能带来碰撞风险，并且机器人端已启用限位、碰撞检测、急停和取消')
+        self._servo_capture()
+        self.servo_cancel.clear()
+        self.servo_thread=threading.Thread(target=self._servo_worker,
+            args=({'step_m':step,'clearance_m':clearance,'max_steps':count},),daemon=True,name='handeye-rgbd-servo')
+        self.servo_thread.start()
+        return {'started':True}
+
+    def cancel_servo(self,_params):
+        self._cancel_servo_internal()
+        self.servo_progress=dict(phase='cancelling',step=self.servo_progress.get('step',0),
+            message='已请求取消运动，请确认机器人实际停止')
+        return {'requested':True}
+
     def dispatch(self, method: str, params: dict[str, Any]) -> Any:
         if method == "ping":
             return {"pong": True, "python": sys.version.split()[0], "mock": self.mock}
@@ -1895,6 +2209,20 @@ class Bridge:
             return self.measure_spatial_target(params)
         if method == 'clear_spatial':
             return self.clear_spatial(params)
+        if method == 'connect_servo_depth':
+            return self.connect_servo_depth(params)
+        if method == 'select_servo_target':
+            return self.select_servo_target(params)
+        if method == 'set_servo_motion_config':
+            return self.set_servo_motion_config(params)
+        if method == 'clear_servo_target':
+            return self.clear_servo_target(params)
+        if method == 'check_servo_motion':
+            return self.check_servo_motion(params)
+        if method == 'start_servo':
+            return self.start_servo(params)
+        if method == 'cancel_servo':
+            return self.cancel_servo(params)
         if method == "connect_robot":
             return self.connect_robot(params)
         if method == "disconnect_robot":
@@ -1975,11 +2303,14 @@ class Bridge:
 
     def shutdown(self) -> None:
         self._running = False
+        self._cancel_servo_internal()
         if self.active_job:
             self.cancel_tool({"id": self.active_job["id"]})
         if self._camera_thread.is_alive() and self._camera_thread is not threading.current_thread():
             self._camera_thread.join(timeout=2.0)
+        self._cancel_servo_internal()
         try:
+            self.ros_depth.stop()
             self.ros_camera.stop()
             self.camera.close()
         except Exception:

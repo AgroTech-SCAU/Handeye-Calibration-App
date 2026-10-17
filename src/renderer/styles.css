@@ -509,3 +509,16 @@ textarea.control { height:auto; min-height:82px; padding-top:10px; resize:vertic
 .model-view-axis-legend .axis-z {background:#609afa;}
 .model-view-axis-legend .axis-joint {background:#ffb33c;}
 @media (max-width:780px) {.model-view-axis-legend {top:47px;font-size:10px;gap:5px 9px;padding:6px 8px;}}
+
+/* Guided RGB-D target pick and motion feedback */
+.preview-surface.servo-pick-mode .preview-image { cursor:crosshair; }
+.preview-surface.servo-pick-mode { cursor:crosshair; }
+.servo-safety-label { display:flex;gap:9px;align-items:flex-start;padding:14px;border:1px solid var(--accent-border);background:var(--accent-muted);border-radius:10px;font-size:12px;line-height:1.55;margin-top:14px; }
+.servo-safety-label input { margin-top:3px; flex:none; }
+.servo-run-status { display:flex;align-items:flex-start;flex-direction:column;gap:6px;padding:12px;border:1px solid var(--border-default);border-radius:10px;margin-top:12px; }
+.servo-run-status b { color:var(--accent); }
+.servo-run-status span { color:var(--text-secondary);font-size:12px;line-height:1.5; }
+
+.servo-selection-box {position:absolute;z-index:6;border:2px solid #f59e0b;background:rgba(245,158,11,.13);pointer-events:none;border-radius:3px;}
+
+.servo-target-marker {position:absolute;z-index:7;transform:translate(-50%,-50%);width:24px;height:24px;border:2px solid #f59e0b;border-radius:50%;background:rgba(245,158,11,.12);color:#fff;text-shadow:0 0 3px #000;display:grid;place-items:center;pointer-events:none;font-size:17px;font-weight:800;}

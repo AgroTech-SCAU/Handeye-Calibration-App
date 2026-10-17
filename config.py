@@ -25,6 +25,9 @@ class AppConfig:
     camera_source: str = "ros"
     image_topic: str = ""
     camera_info_topic: str = ""
+    aligned_depth_topic: str = ""
+    motion_action: str = "/move_action"
+    motion_group: str = "arm"
     camera_index: int = 0
     camera_width: int = 640
     camera_height: int = 480

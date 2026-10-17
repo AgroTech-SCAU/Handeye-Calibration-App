@@ -33,6 +33,8 @@
         "from": "algorithm_runner.py",
         "to": "handeye/algorithm_runner.py"
       },
+      {"from":"servo_engine.py","to":"handeye/servo_engine.py"},
+      {"from":"ros_motion.py","to":"handeye/ros_motion.py"},
       {
         "from": "validation_engine.py",
         "to": "handeye/validation_engine.py"
