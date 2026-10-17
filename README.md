@@ -123,7 +123,19 @@ Tomato-Manipulation 的手眼标定节点可发布 `/arm/tool_transform`，输�
 
 `JointState` 必须先导入真实的 URDF，使用关节名称匹配及 URDF 正运动学，不使用自带演示用的机械臂参数，导入 URDF 不会发布 `/tf`
 
-机器人接口可以选择 URDF / Xacro 文件，或读取 ROS2 `/robot_description`，导入前请断开机械臂连接，模型副本保存在应用的运行数据目录
+机器人接口可选择 Description 文件夹或 ZIP，也可导入 URDF / Xacro 文件，或读取 ROS2 `/robot_description`
+
+导入前须断开机械臂连接，系统会保存模型及其网格资源的本地副本，基础标定无需导入模型
+
+导入模型后点击「查看三维模型」，可查看 Visual / Collision、Link / Joint 树、关节轴、工具坐标系以及有效求解矩阵对应的相机和历史棋盘位置，支持旋转、缩放、平移和刷新姿态
+
+模型查看器通过 WebGL 在 GPU 上绘制连续网格，参考 SerialArm-Core 的只读模型检查方式，显示 Link 与关节坐标系，不使用逐三角面抽样造成网格缺口；静态几何数据会被缓存
+
+左键拖动旋转模型，拖动方向与模型可见运动方向一致；右键或 Shift + 拖动平移，滚轮缩放，双击恢复合适视角；坐标轴颜色固定为 X 红、Y 绿、Z 蓝，关节轴为橙色；WebGL 不可用时自动进入低精度 Canvas 模式，并在顶部提示
+
+只有完整 JointState 才能正确还原动态整臂姿态，单独的 TransformStamped、PoseStamped 或末端 TF2 不能反推出各关节角，查看器会显示 URDF 零位示意并明确标注
+
+缺少 Mesh 只影响外观显示，不影响已知 Link 变换或基本手眼标定，GLB/OBJ/glTF 网格预览需要安装 trimesh，STL 可以直接加载
 
 验证页面依次提供「离线验证 — 独立样本几何一致性」「真机验证 — 几何一致性」「真机验证 — 手眼伺服定位」
 

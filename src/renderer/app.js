@@ -73,6 +73,7 @@ function createMockApi() {
       if(method==='disconnect_robot'){mock.ros.running=false;mock.ros.pose=null;mock.camera.open=false;mock.camera.receiving=false;emit('state',mock);return mock}
       if(method==='import_camera_info'||method==='import_intrinsics')return {path:'/tmp/handeye/camera_intrinsics.yaml'};
       if(method==='export_matrix')return {path:'/tmp/handeye/handeye_transform.yaml'};
+      if(method==='get_model_preview')return {name:'Demo Robot',root:'base_link',links:[{name:'base_link',visuals:[{layer:'visual',transform:[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]],geometry:{type:'box',size:[.2,.2,.12]},vertices:[]} ]},{name:'tool0',visuals:[{layer:'visual',transform:[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]],geometry:{type:'cylinder',radius:.018,length:.14},vertices:[]}]}],joints:[{name:'tool_fixed',parent:'base_link',child:'tool0',kind:'fixed',axis:[0,0,1]}],frames:{base_link:[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]],tool0:[[1,0,0,0],[0,1,0,0],[0,0,1,.2],[0,0,0,1]]},model_pose:'illustrative',frames_note:'URDF reference pose',warnings:[],mesh_count:0};
       if(method==='set_validation_overlay')return {enabled:Boolean(params.enabled)};
       if(method==='freeze_validation'){mock.validation={reference_status:'ready',frames:['tool0','camera_optical_frame'],train_count:20,live_count:0,import_path:'',report:null};emit('state',mock);return {path:'/tmp/handeye/validation_reference.yaml'}}
       if(method==='import_validation'){mock.validation.import_path=params.path;return {path:params.path,count:7}}
@@ -96,7 +97,7 @@ function createMockApi() {
       if(method==='run_tool'){const text=`[mock] ${params.name} completed\n`;emit('log',{text}); const result={translation_m:[.041,-.018,.087],quaternion_xyzw:[.003,.012,-.004,.9999],translation_rms_mm:2.31,rotation_rms_deg:.42,transform_matrix:[[1,0,0,.041],[0,1,0,-.018],[0,0,1,.087],[0,0,0,1]]}; return {ok:true,exit_code:0,log:text,result}}
       return {}
     },
-    selectIntrinsics:async()=>'/tmp/handeye/intrinsics.yaml', selectRobotModel:async()=>'', selectSamples:async()=>'/tmp/handeye/samples.yaml', selectDirectory:async()=>'/home/user/handeye-output', runtimeInfo:async()=>({packaged:false,ubuntu:'22.04',rosDistro:'humble',rosSetup:'/opt/ros/humble/setup.bash',python:'sandbox-mock',runtimePython:'/home/user/.local/share/handeye-calibration/.venv/bin/python',runtimeInstalled:true}),
+    selectIntrinsics:async()=>'/tmp/handeye/intrinsics.yaml', selectRobotDescriptionFolder:async()=>'', selectRobotModel:async()=>'', selectSamples:async()=>'/tmp/handeye/samples.yaml', selectDirectory:async()=>'/home/user/handeye-output', runtimeInfo:async()=>({packaged:false,ubuntu:'22.04',rosDistro:'humble',rosSetup:'/opt/ros/humble/setup.bash',python:'sandbox-mock',runtimePython:'/home/user/.local/share/handeye-calibration/.venv/bin/python',runtimeInstalled:true}),
     runtimeInstall:async()=>({ok:true,python:'/home/user/.local/share/handeye-calibration/.venv/bin/python'}), backendRestart:async()=>({ok:true}),
     onEvent:fn=>{listeners.push(fn);return()=>{}}, onRuntime:fn=>{runtime.push(fn);return()=>{}}, onRuntimeInstall:()=>()=>{}, onStderr:()=>()=>{}, onWindowState:()=>()=>{}, window:{minimize(){},maximize(){},close(){}}
   }
@@ -287,8 +288,9 @@ function modelPanel(){
     <div class="help">${t('guide.modelDesc')}</div>
     <div class="model-summary">${dot(has?'success':'warning')}<b>${modelCaption}</b></div>
     ${m.error?`<div class="help model-error">${escapeHtml(m.error)}</div>`:''}
-    <div class="actions model-actions">${btn('import-robot-model',t('guide.importModel'),'folder','',state.data.ros?.running?'disabled':'')}${btn('load-robot-description',t('guide.rosModel'),'scan','',state.data.ros?.running?'disabled':'')}${has?btn('clear-robot-model',t('guide.clearModel'),'trash','',state.data.ros?.running?'disabled':''):''}</div>
-    ${has?`<details class="model-link-details"><summary>${t('guide.linksShow')}</summary><div class="model-links">${all.map(x=>`<span>${escapeHtml(x)}</span>`).join('')}</div><div class="help">${t('guide.fixedOnly')}</div></details>`:''}
+    <div class="actions model-actions">${btn('import-robot-model',t('guide.importModel'),'folder','',state.data.ros?.running?'disabled':'')}${btn('import-description-folder',t('guide.importFolder'),'folder','',state.data.ros?.running?'disabled':'')}${btn('load-robot-description',t('guide.rosModel'),'scan','',state.data.ros?.running?'disabled':'')}
+      ${has?btn('open-model-viewer',t('guide.view3D'),'target','primary'):''}${has?btn('clear-robot-model',t('guide.clearModel'),'trash','',state.data.ros?.running?'disabled':''):''}</div>
+    ${has?`<div class="help">${t('guide.viewerHint')}</div><details class="model-link-details"><summary>${t('guide.linksShow')}</summary><div class="model-links">${all.map(x=>`<span>${escapeHtml(x)}</span>`).join('')}</div><div class="help">${t('guide.fixedOnly')}</div></details>`:''}
     <div class="help">${t('guide.modelNoTF')}</div>
   </div>`
 }
@@ -824,6 +826,19 @@ function bindPage(){
       if(!path)return
       await request('import_robot_model',{path},t('guide.importModel'))
       await refreshState();toast(t('guide.modelTitle'),t('guide.imported'),'success')
+    }catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
+  $('#import-description-folder')?.addEventListener('click',async()=>{
+    try{
+      const path=await api?.selectRobotDescriptionFolder?.()
+      if(!path)return
+      await request('import_robot_model',{path},t('guide.importModel'))
+      await refreshState();toast(t('guide.modelTitle'),t('guide.imported'),'success')
+    }catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
+  $('#open-model-viewer')?.addEventListener('click',async()=>{
+    try{
+      await window.HandeyeModelViewer.open((method,params)=>api.request(method,params),()=>state.language)
     }catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
   })
   $('#load-robot-description')?.addEventListener('click',async()=>{

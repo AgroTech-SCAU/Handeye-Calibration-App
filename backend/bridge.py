@@ -59,6 +59,7 @@ _install_zip_strict_compat()
 
 from algorithm_runner import run_algorithm
 from robot_model import RobotModel, pose_from_matrix
+from description_loader import stage_description, preview_payload
 from calibration_engine import CameraSession, HandEyeCollection, IntrinsicCalibration, detect_chessboard, rpy_to_quaternion
 from calibration_board import CalibrationBoard, positive_int
 from validation_engine import (freeze_solution, load_frozen, validate_metadata,
@@ -125,6 +126,8 @@ class Bridge:
         self.config = AppConfig.load(self.config_path)
         self.robot_model = None
         self.robot_model_error = ''
+        self.latest_joint_positions = {}
+        self.latest_joint_received_at = None
         if self.config.robot_model_path:
             try:
                 self.robot_model = RobotModel.from_file(self.config.robot_model_path)
@@ -648,6 +651,8 @@ class Bridge:
             positions = dict(zip(joints.names,joints.values))
             transform=self.robot_model.transform(self.config.robot_base_frame,self.config.robot_end_frame,positions)
             pose_values=pose_from_matrix(transform)
+            self.latest_joint_positions = positions
+            self.latest_joint_received_at = time.monotonic()
             current_time=time.monotonic()
             self.pose_history.add(pose_values,current_time,joints.timestamp,joints.values,'ros_joints')
             # JointState.header.frame_id is not the robot base frame
@@ -915,30 +920,85 @@ class Bridge:
         if self.handeye.samples and self.config.ros_input_type=='joints':
             raise ValueError('当前用 JointState 正运动学采集了样本，更换 URDF 前需先备份并清空样本')
         path=str(params.get('path','')).strip()
-        model=RobotModel.from_file(path)
-        # Read/expand once and keep an immutable local model snapshot
-        destination=self.data_dir/'robot_model.urdf'
-        if Path(path).suffix.lower()=='.xacro':
-            import subprocess
-            content=subprocess.run(['xacro',str(Path(path).resolve())],capture_output=True,text=True,
-                timeout=12,check=True,cwd=str(Path(path).resolve().parent)).stdout
-        else:
-            content=Path(path).expanduser().resolve().read_text(encoding='utf-8')
-        model=RobotModel(content)
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=self.data_dir,
-                prefix='.robot_model-',suffix='.urdf',delete=False) as handle:
-            handle.write(content)
-            temp=Path(handle.name)
-        temp.replace(destination)
+        if not path:
+            raise ValueError('请选择 Description 文件夹、ZIP、URDF 或 Xacro')
+        import shutil
+        staged, relative, model = stage_description(path, self.data_dir)
+        destination = self.data_dir / 'robot_description'
+        previous = self.data_dir / '.robot_description_previous'
+        previous.exists() and shutil.rmtree(previous)
+        try:
+            if destination.exists():
+                destination.rename(previous)
+            staged.rename(destination)
+            model_file = destination / relative
+            # Installation remains usable after source archive is deleted
+            self.config.robot_model_path = str(model_file)
+            self.config.save(self.config_path)
+        except Exception:
+            if destination.exists() and destination != staged:
+                shutil.rmtree(destination, ignore_errors=True)
+            if previous.exists():
+                previous.rename(destination)
+            raise
+        finally:
+            if staged.exists():
+                shutil.rmtree(staged, ignore_errors=True)
+        if previous.exists():
+            shutil.rmtree(previous, ignore_errors=True)
         self.robot_model=model
         self.robot_model_error=''
-        self.config.robot_model_path=str(destination)
-        self.config.save(self.config_path)
         self.spatial_contact=None
         self.spatial_measurements=[]
         self._emit_state()
         return self._model_state()
+
+    @serialized
+    def get_model_preview(self, _params):
+        if self.robot_model is None or not self.config.robot_model_path:
+            raise ValueError('先导入 Description，才能查看三维机械臂')
+        model_path = Path(self.config.robot_model_path)
+        if not model_path.is_file():
+            raise ValueError('机器人模型文件已被移动，请重新导入 Description')
+        live = bool(self.latest_joint_received_at is not None and
+                    time.monotonic() - self.latest_joint_received_at < 2 and
+                    self.config.ros_input_type == 'joints' and self.ros.running)
+        positions = self.latest_joint_positions if live else {}
+        preview = preview_payload(model_path, self.robot_model, positions)
+        preview['state_source'] = ('live_joint_state' if preview['model_pose']=='joint_state' else 'model_reference')
+        preview['frames_note'] = ('当前关节状态' if preview['model_pose']=='joint_state' else 'URDF 零位示意，未获得完整关节角，不能代表实际整臂姿态')
+        preview['active_pose'] = self._state().get('ros',{}).get('pose')
+        # Render the calibrated camera only when solution matches the current samples
+        try:
+            import yaml
+            from calibration_engine import make_transform, quaternion_to_matrix
+            _,_,sample_path = self._paths()
+            result_path = sample_path.with_name(sample_path.stem+'_result.yaml')
+            if (self.latest_pose and self.latest_pose_at and time.monotonic()-self.latest_pose_at<1.5 and sample_path.is_file() and result_path.is_file()
+                    and result_path.stat().st_mtime_ns >= sample_path.stat().st_mtime_ns):
+                result = yaml.safe_load(result_path.read_text(encoding='utf-8')) or {}
+                parent = result.get('parent_frame')
+                if parent == self.latest_pose.child_frame_id:
+                    x = np.asarray(result.get('transform_matrix'), dtype=float)
+                    if x.shape == (4,4) and np.isfinite(x).all():
+                        values = self.latest_pose.values
+                        base_tool = make_transform(quaternion_to_matrix(*values[3:]), values[:3])
+                        root_base = self.robot_model.transform(self.robot_model.root, self.latest_pose.frame_id,
+                            self.latest_joint_positions if live else {n:0.0 for n,j in self.robot_model.joints.items() if j['kind']!='fixed'})
+                        preview['camera_frame'] = {'name':result.get('child_frame','camera'),
+                            'parent':self.latest_pose.frame_id, 'transform':(root_base@base_tool@x).round(8).tolist()}
+                        if self.handeye.samples:
+                            # Last capture is a historical observation, not a live board tracker
+                            observation = self.handeye.samples[-1]
+                            if ('gripper_in_base' in observation and 'target_to_camera' in observation):
+                                board = (np.asarray(observation['gripper_in_base'])@x@
+                                         np.asarray(observation['target_to_camera']))
+                                preview['board_frame'] = {'name':'board (history)',
+                                    'parent':self.latest_pose.frame_id,
+                                    'transform':(root_base@board).round(8).tolist(), 'historical':True}
+        except Exception:
+            pass
+        return preview
 
     @serialized
     def import_ros_model(self, _params):
@@ -967,14 +1027,12 @@ class Bridge:
             if created:rclpy.shutdown()
         if not values:
             raise ValueError('3 秒内未收到 /robot_description，请先启动 robot_state_publisher 或改为导入 URDF 文件')
-        # Reuse the exact same validated file-import path
-        with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',suffix='.urdf',
-                prefix='handeye-model-',delete=False) as handle:
-            handle.write(values[-1]);temporary=Path(handle.name)
-        try:
+        # Isolate the downloaded XML rather than copying every URDF in /tmp
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='handeye-ros-model-',dir=self.data_dir) as directory:
+            temporary=Path(directory)/'robot.urdf'
+            temporary.write_text(values[-1],encoding='utf-8')
             return self.import_robot_model({'path':str(temporary)})
-        finally:
-            temporary.unlink(missing_ok=True)
 
     @serialized
     def clear_robot_model(self, _params):
@@ -1821,6 +1879,8 @@ class Bridge:
             if kind not in graph.get(topic, []):
                 raise ValueError("选择的话题不存在或类型不匹配，请重新搜索")
             return inspect_ros_topic(topic, kind)
+        if method == 'get_model_preview':
+            return self.get_model_preview(params)
         if method == 'import_robot_model':
             return self.import_robot_model(params)
         if method == 'import_ros_model':

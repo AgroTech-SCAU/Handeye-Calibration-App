@@ -267,7 +267,7 @@ async function bridgeRequest(method, params = {}) {
     const timer = setTimeout(() => {
       pending.delete(id)
       reject(new Error(`Backend timeout: ${method}`))
-    }, method === 'run_tool' ? 180000 : 20000)
+    }, method === 'run_tool' ? 180000 : method === 'get_model_preview' ? 60000 : 20000)
     pending.set(id, { resolve, reject, timer })
     try {
       python.stdin.write(JSON.stringify({ id, method, params }) + '\n')
@@ -367,9 +367,16 @@ ipcMain.handle('handeye:select-intrinsics', async () => {
 })
 ipcMain.handle('handeye:select-robot-model', async () => {
   const result = await dialog.showOpenDialog(win, {
-    title: '导入机械臂 URDF / Xacro 模型',
+    title: '导入 Description ZIP 或 URDF / Xacro',
     properties: ['openFile'],
-    filters: [{ name: 'Robot model', extensions: ['urdf', 'xacro'] }]
+    filters: [{ name: 'Description / Robot model', extensions: ['zip', 'urdf', 'xacro'] }]
+  })
+  return result.canceled ? '' : (result.filePaths[0] || '')
+})
+ipcMain.handle('handeye:select-description-folder', async () => {
+  const result = await dialog.showOpenDialog(win, {
+    title: '选择 ROS2 Description 文件夹',
+    properties: ['openDirectory']
   })
   return result.canceled ? '' : (result.filePaths[0] || '')
 })
