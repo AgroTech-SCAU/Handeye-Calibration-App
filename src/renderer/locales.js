@@ -42,7 +42,7 @@ const HANDEYE_LOCALES = {
         "servo.clearance": "安全间距 mm",
         "servo.maxSteps": "最多步数",
         "servo.acknowledge": "我已检查机器人端碰撞限制、工作区、现场人员和急停，确认允许低速自动运动",
-        "servo.clearanceHint": "安全间距不得小于 25mm，这里只做预接近验证，默认不会直接触碰标定板或番茄",
+        "servo.clearanceHint": "安全间距不得小于 25mm，这里只做预接近验证，默认不会直接触碰标定板",
         "servo.start": "确认开始伺服",
         "servo.cancel": "取消运动",
         "servo.needSafety": "必须确认现场安全与机器人端防护措施",
