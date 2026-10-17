@@ -35,11 +35,21 @@ let responsiveListenerBound = false
 const i18n = window.HandEyeI18n
 const initialLanguage = i18n?.loadLanguage?.() || 'en'
 
+// Every card defaults to collapsed except the camera preview, which defaults to expanded
+// Preserve an explicit false value when a user chooses to collapse the preview
+function loadExpandedCards(){
+  try{
+    const saved=JSON.parse(localStorage.getItem('handeye-expanded-cards')||'{}')
+    if(!saved || typeof saved!=='object' || Array.isArray(saved)) return {}
+    return Object.fromEntries(Object.entries(saved).filter(([key,expanded])=>key.includes('::') && (expanded===true || (key.endsWith('::camera-preview') && expanded===false))))
+  }catch{return {}}
+}
+
 const state = {
   page:'connect', theme:localStorage.getItem('handeye-theme') || 'dark', language:initialLanguage, backend:'starting', runtime:null,
   data:{ config:{output_dir:'',camera_source:'ros',image_topic:'',camera_info_topic:'',camera_frame:'',robot_base_frame:'',robot_end_frame:'',camera_index:0,camera_width:640,camera_height:480,chessboard_cols:11,chessboard_rows:8,square_size_mm:15,board_type:'chessboard',charuco_squares_x:14,charuco_squares_y:9,charuco_marker_size_mm:15,charuco_dictionary:'DICT_5X5_100',charuco_min_corners:6,charuco_legacy_pattern:false,ros_input_type:'transform',pose_topic:'',joint_dof:5,joint_names:'',capture_topic:'',status_topic:'/handeye/status'}, camera:{open:false,board_found:false,width:640,height:480}, ros:{running:false,pose:null}, intrinsics:{count:0,exists:false}, handeye:{count:0,samples_exists:false}, validation:{reference_status:'unavailable',report:null,live_count:0,import_path:''}, output_dir:'' },
   arucoDictionaries:[], discoveredTopics:[], discoveredOnce:false, topicDetails:{}, autoFilled:new Set(), inspectingTopic:false, preview:'', logs:'', intrinsicQuality:'standard', handeyeQuality:'standard', sampleMode:'auto', manualType:'quaternion', angleUnit:'deg', solveMode:'robust',
-  intrinsicResult:null, solveResult:null, validationMode:'offline', validationThresholds:{translation_rms_mm:5,rotation_rms_deg:1,projection_rms_px:4}, selectedSampleIds:new Set(), busyJob:null, toolCompletions:new Map(), runtimeInstallLog:'', runtimeInstallState:'idle'
+  intrinsicResult:null, solveResult:null, validationMode:'offline', validationThresholds:{translation_rms_mm:5,rotation_rms_deg:1,projection_rms_px:4}, selectedSampleIds:new Set(), busyJob:null, toolCompletions:new Map(), runtimeInstallLog:'', runtimeInstallState:'idle', expandedCards:loadExpandedCards()
 }
 
 const ARUCO_DICTIONARIES=[
@@ -86,7 +96,7 @@ function createMockApi() {
       if(method==='run_tool'){const text=`[mock] ${params.name} completed\n`;emit('log',{text}); const result={translation_m:[.041,-.018,.087],quaternion_xyzw:[.003,.012,-.004,.9999],translation_rms_mm:2.31,rotation_rms_deg:.42,transform_matrix:[[1,0,0,.041],[0,1,0,-.018],[0,0,1,.087],[0,0,0,1]]}; return {ok:true,exit_code:0,log:text,result}}
       return {}
     },
-    selectIntrinsics:async()=>'/tmp/handeye/intrinsics.yaml', selectSamples:async()=>'/tmp/handeye/samples.yaml', selectDirectory:async()=>'/home/user/handeye-output', runtimeInfo:async()=>({packaged:false,ubuntu:'22.04',rosDistro:'humble',rosSetup:'/opt/ros/humble/setup.bash',python:'sandbox-mock',runtimePython:'/home/user/.local/share/handeye-calibration/.venv/bin/python',runtimeInstalled:true}),
+    selectIntrinsics:async()=>'/tmp/handeye/intrinsics.yaml', selectRobotModel:async()=>'', selectSamples:async()=>'/tmp/handeye/samples.yaml', selectDirectory:async()=>'/home/user/handeye-output', runtimeInfo:async()=>({packaged:false,ubuntu:'22.04',rosDistro:'humble',rosSetup:'/opt/ros/humble/setup.bash',python:'sandbox-mock',runtimePython:'/home/user/.local/share/handeye-calibration/.venv/bin/python',runtimeInstalled:true}),
     runtimeInstall:async()=>({ok:true,python:'/home/user/.local/share/handeye-calibration/.venv/bin/python'}), backendRestart:async()=>({ok:true}),
     onEvent:fn=>{listeners.push(fn);return()=>{}}, onRuntime:fn=>{runtime.push(fn);return()=>{}}, onRuntimeInstall:()=>()=>{}, onStderr:()=>()=>{}, onWindowState:()=>()=>{}, window:{minimize(){},maximize(){},close(){}}
   }
@@ -194,7 +204,7 @@ async function transitionToPage(page){
     if(epoch!==navigationEpoch)return
   }
   state.page=page
-  if(api?.request)void api.request('set_validation_overlay',{enabled:page==='validation'&&state.validationMode==='live'}).catch(()=>{})
+  if(api?.request)void api.request('set_validation_overlay',{enabled:page==='validation'&&state.validationMode==='live',spatial:page==='validation'&&state.validationMode==='spatial'}).catch(()=>{})
   renderPage(false)
   const content=$('.content')
   if(content)content.scrollTop=0
@@ -203,11 +213,95 @@ async function transitionToPage(page){
 function navigate(page){closeAppearanceMenu();void transitionToPage(page)}
 
 function pageHead(kicker,title,desc,actions=''){return `<div class="page-head"><div class="page-head-main"><div class="page-kicker">${kicker}</div><h2 class="page-title">${title}</h2><p class="page-description">${desc}</p></div>${actions?`<div class="page-actions">${actions}</div>`:''}</div>`}
-function card(title,subtitle,ico,body,footer='',accent=false){return `<section class="card"><div class="card-head"><span class="card-icon ${accent?'accent':''}">${icon(ico)}</span><div><h3 class="card-title">${title}</h3>${subtitle?`<p class="card-subtitle">${subtitle}</p>`:''}</div></div><div class="card-body">${body}</div>${footer?`<div class="card-footer">${footer}</div>`:''}</section>`}
+// Card identities must not depend on translated Chinese/English display titles.
+const CARD_TITLE_KEYS = [
+  'connect.projectSettings', 'connect.robotInterface',
+  'intrinsics.boardTitle', 'intrinsics.captureTitle',
+  'samples.manager', 'handeye.robotPose', 'handeye.collectionTitle',
+  'solve.pipeline', 'solve.transform', 'validation.freezeTitle', 'solve.log',
+  'spatial.modeTitle', 'spatial.step1', 'spatial.step2', 'spatial.step3', 'spatial.report',
+  'validation.fixed', 'validation.datasetTitle', 'validation.liveTitle',
+  'validation.offlineTitle', 'validation.runTitle', 'validation.reportTitle',
+  'settings.appearance', 'settings.runtime', 'settings.language',
+  'about.experience', 'about.core'
+]
+function cardKey(title,explicit=''){
+  const key=explicit || CARD_TITLE_KEYS.find(candidate=>t(candidate)===String(title)) || String(title).trim()
+  return `${state.page}::${encodeURIComponent(key)}`
+}
+function isCardExpanded(key){
+  if(key.endsWith('::camera-preview'))return state.expandedCards[key]!==false
+  return state.expandedCards[key]===true
+}
+function setCardExpanded(key,expanded){
+  if(key.endsWith('::camera-preview'))state.expandedCards[key]=Boolean(expanded)
+  else if(expanded)state.expandedCards[key]=true
+  else delete state.expandedCards[key]
+  localStorage.setItem('handeye-expanded-cards',JSON.stringify(state.expandedCards))
+}
+function cardToggle(key,expanded){
+  // This button is the only interactive control in its heading, so clicks never bubble
+  // to a second handler or operate on another card found by a document query.
+  const action=expanded?(state.language==='zh-CN'?'收起':'Collapse'):(state.language==='zh-CN'?'展开':'Expand')
+  return `data-card-toggle="${escapeHtml(key)}" aria-expanded="${expanded}" aria-label="${action}" title="${action}"`
+}
+function card(title,subtitle,ico,body,footer='',accent=false,options={}){
+  const key=cardKey(title,options.key), collapsible=options.collapsible!==false
+  const expanded=!collapsible||isCardExpanded(key)
+  return `<section class="card ${expanded?'':'collapsed'}" data-card-key="${escapeHtml(key)}">
+    <div class="card-head">
+      <span class="card-icon ${accent?'accent':''}">${icon(ico)}</span>
+      ${collapsible?`<button type="button" class="card-head-trigger" ${cardToggle(key,expanded)}><span class="card-summary"><span class="card-title">${title}</span>${subtitle?`<span class="card-subtitle">${subtitle}</span>`:''}</span><span class="card-toggle">${icon('chevron')}</span></button>`:`<div class="card-summary"><h3 class="card-title">${title}</h3>${subtitle?`<p class="card-subtitle">${subtitle}</p>`:''}</div>`}
+    </div>
+    <div class="card-body" ${expanded?'':'hidden'}>${body}</div>
+    ${footer?`<div class="card-footer" ${expanded?'':'hidden'}>${footer}</div>`:''}
+  </section>`
+}
 function field(label,id,value,type='text',help=''){return `<div class="field"><label for="${id}">${label}</label><input class="control" id="${id}" type="${type}" value="${escapeHtml(value)}"/>${help?`<div class="help">${help}</div>`:''}</div>`}
 function btn(id,label,ico='play',kind='',extra=''){return `<button class="btn ${kind}" id="${id}" ${extra}>${icon(ico)}${label}</button>`}
-function preview(){const cam=state.data.camera||{};return `<section class="card preview-card"><div class="preview-toolbar"><b>${t('preview.title')}</b><span class="pill" id="preview-live-pill">${dot(cam.receiving?'success':'warning')} ${cam.receiving?t('status.live'):cam.open?t('status.waiting'):t('status.offline')}</span><span class="meta" id="preview-size">${cam.width||640} × ${cam.height||480}</span></div><div class="preview-surface" id="preview-surface">${state.preview?`<img class="preview-image" src="data:image/jpeg;base64,${state.preview}"/>`:`<div class="preview-empty"><div class="ring">${icon('camera')}</div><b>${t('preview.waitingTitle')}</b><span>${t('preview.waitingDesc')}</span></div>`}</div></section>`}
+function workflowHelp(key){return `<div class="workflow-help">${icon('info')}<span>${t(key)}</span></div>`}
+function preview(){
+  const cam=state.data.camera||{},key=cardKey('preview','camera-preview'),expanded=isCardExpanded(key)
+  return `<section class="card preview-card ${expanded?'':'collapsed'}" data-card-key="${escapeHtml(key)}">
+    <div class="preview-toolbar"><button class="preview-head-trigger" type="button" ${cardToggle(key,expanded)}>
+      <b>${t('preview.title')}</b><span class="pill" id="preview-live-pill">${dot(cam.receiving?'success':'warning')} ${cam.receiving?t('status.live'):cam.open?t('status.waiting'):t('status.offline')}</span>
+      <span class="meta" id="preview-size">${cam.width||640} × ${cam.height||480}</span><span class="card-toggle">${icon('chevron')}</span>
+    </button></div>
+    <div class="preview-surface" id="preview-surface" ${expanded?'':'hidden'}>${state.preview?`<img class="preview-image" src="data:image/jpeg;base64,${state.preview}"/>`:`<div class="preview-empty"><div class="ring">${icon('camera')}</div><b>${t('preview.waitingTitle')}</b><span>${t('preview.waitingDesc')}</span></div>`}</div>
+  </section>`
+}
 
+function interfaceGuide(kind){
+  const guides={
+    transform:t('guide.transform'), pose:t('guide.pose'),tf:t('guide.tf'),joints:t('guide.joints')
+  }
+  return `<div class="interface-guide" id="robot-input-guide">${icon('info')}<span>${guides[kind]||guides.transform}</span></div>`
+}
+function modelPanel(){
+  const m=state.data.robot_model||{},c=state.data.config||{}
+  const has=Boolean(m.loaded)
+  const modelCaption=has?`${escapeHtml(m.name||'robot')} · ${m.links?.length||0} Links · ${m.active_joints?.length||0} Active Joints`:t('guide.modelMissing')
+  const all=has?(m.links||[]):[]
+  return `<div class="interface-section model-section">
+    <div class="interface-section-title">${icon('scan')}<b>${t('guide.modelTitle')}</b><span class="model-tag">${c.ros_input_type==='joints'?t('guide.required'):t('guide.optional')}</span></div>
+    <div class="help">${t('guide.modelDesc')}</div>
+    <div class="model-summary">${dot(has?'success':'warning')}<b>${modelCaption}</b></div>
+    ${m.error?`<div class="help model-error">${escapeHtml(m.error)}</div>`:''}
+    <div class="actions model-actions">${btn('import-robot-model',t('guide.importModel'),'folder','',state.data.ros?.running?'disabled':'')}${btn('load-robot-description',t('guide.rosModel'),'scan','',state.data.ros?.running?'disabled':'')}${has?btn('clear-robot-model',t('guide.clearModel'),'trash','',state.data.ros?.running?'disabled':''):''}</div>
+    ${has?`<details class="model-link-details"><summary>${t('guide.linksShow')}</summary><div class="model-links">${all.map(x=>`<span>${escapeHtml(x)}</span>`).join('')}</div><div class="help">${t('guide.fixedOnly')}</div></details>`:''}
+    <div class="help">${t('guide.modelNoTF')}</div>
+  </div>`
+}
+function capabilitiesPanel(){
+ const pose=state.data.ros?.pose,cam=state.data.camera||{},model=state.data.robot_model||{}
+ const rows=[
+  [t('guide.capCalibrate'),!!pose&&cam.receiving,t('guide.capCalibrateHint')],
+  [t('guide.capGeom'),!!pose&&cam.receiving&&!!state.data.validation?.reference_status&&state.data.validation?.reference_status==='ready',t('guide.capGeomHint')],
+  [t('guide.capTouch'),!!pose&&cam.receiving&&model.loaded&&state.data.validation?.reference_status==='ready',t('guide.capTouchHint')],
+  [t('guide.capServo'),false,t('guide.capServoHint')]
+ ]
+ return `<details class="interface-advanced capability-guide"><summary>${t('guide.capabilities')}</summary><div class="capability-list">${rows.map(([name,ready,hint])=>`<div class="capability-row"><span>${dot(ready?'success':'warning')}<b>${name}</b></span><div class="help">${hint}</div></div>`).join('')}</div><div class="help">${t('guide.statusExplainer')}</div></details>`
+}
 const TOPIC_TYPES={
   image:'sensor_msgs/msg/Image',info:'sensor_msgs/msg/CameraInfo',
   pose:'geometry_msgs/msg/PoseStamped',transform:'geometry_msgs/msg/TransformStamped',
@@ -230,7 +324,7 @@ function renderConnect(){
   const c=state.data.config,cam=state.data.camera||{},ros=state.data.ros||{}
   const isRos=c.camera_source!=='v4l2',kind=c.ros_input_type||'transform'
   const active=cam.open||ros.running,connected=cam.open&&ros.running
-  return `<div class="page">${pageHead(t('connect.kicker'),t('connect.title'),t('connect.desc'))}
+  return `<div class="page">${pageHead(t('connect.kicker'),t('connect.title'),t('connect.desc'))}${workflowHelp('guide.connectWorkflow')}
   <div class="grid three" style="margin-bottom:14px">
     <div class="metric"><div class="metric-label">${t('connect.metricCamera')}</div><div class="metric-value" id="connect-camera-state" style="color:${cam.receiving?'var(--success)':'var(--text-secondary)'}">${cam.receiving?t('status.connected'):cam.open?t('status.waiting'):t('status.offline')}</div><div class="metric-meta">${escapeHtml(isRos?c.image_topic:t('connect.device',{index:c.camera_index,width:c.camera_width,height:c.camera_height}))}</div></div>
     <div class="metric"><div class="metric-label">${t('connect.metricRobot')}</div><div class="metric-value" id="connect-robot-state" style="color:${ros.pose?'var(--success)':'var(--text-secondary)'}">${ros.pose?t('status.receiving'):ros.running?t('status.waiting'):t('status.offline')}</div><div class="metric-meta">${escapeHtml(kind==='tf'?(c.robot_base_frame+' → '+c.robot_end_frame):c.pose_topic)}</div></div>
@@ -246,13 +340,16 @@ function renderConnect(){
       <div class="form-row"><div class="field full">${field(t('field.cameraFrame'),'camera-frame',c.camera_frame||'')}<div class="detected-meta" id="camera-detected">${cameraMetaText()}</div></div></div>
     </div>
     <div class="interface-section"><div class="interface-section-title">${icon('target')}<b>${t('connect.armInterface')}</b></div>
-      <div class="form-row"><div class="field"><label for="ros-input-type">${t('field.inputType')}</label><select class="control" id="ros-input-type"><option value="pose" ${kind==='pose'?'selected':''}>PoseStamped</option><option value="transform" ${kind==='transform'?'selected':''}>TransformStamped</option><option value="tf" ${kind==='tf'?'selected':''}>TF2</option><option value="joints" ${kind==='joints'?'selected':''}>JointState</option></select></div><div class="field" id="pose-topic-field" style="display:${kind==='tf'?'none':''}">${topicField(t('field.inputTopic'),'pose-topic',c.pose_topic,kind)}</div></div>
+      <div class="form-row"><div class="field"><label for="ros-input-type">${t('field.inputType')}</label><select class="control" id="ros-input-type"><option value="transform" ${kind==='transform'?'selected':''}>TransformStamped · ${t('guide.recommended')}</option><option value="tf" ${kind==='tf'?'selected':''}>TF2</option><option value="pose" ${kind==='pose'?'selected':''}>PoseStamped</option><option value="joints" ${kind==='joints'?'selected':''}>JointState + URDF</option></select></div><div class="field" id="pose-topic-field" style="display:${kind==='tf'?'none':''}">${topicField(t('field.inputTopic'),'pose-topic',c.pose_topic,kind)}</div></div>
+      ${interfaceGuide(kind)}
       <div class="form-row" id="robot-frame-fields">${kind==='transform'?
         `<div class="field"><label for="robot-base-frame">${t('field.baseFrame')} · ${t('connect.fromTransform')}</label><input class="control" id="robot-base-frame" readonly placeholder="${t('connect.waitingTransform')}" value="${escapeHtml(ros.pose?.frame_id||state.topicDetails.transform?.frame_id||'')}"/></div><div class="field"><label for="robot-end-frame">${t('field.endFrame')} · ${t('connect.fromTransform')}</label><input class="control" id="robot-end-frame" readonly placeholder="${t('connect.waitingTransform')}" value="${escapeHtml(ros.pose?.child_frame_id||state.topicDetails.transform?.child_frame_id||'')}"/></div>`:
         `${field(t('field.baseFrame'),'robot-base-frame',c.robot_base_frame||'')}${field(t('field.endFrame'),'robot-end-frame',c.robot_end_frame||'')}`}</div>
       <div class="detected-meta" id="robot-detected">${robotMetaText()}</div>
-      <div class="form-row" id="joint-settings" style="display:${kind==='joints'?'grid':'none'}">${field(t('field.jointDof'),'joint-dof',c.joint_dof,'number')}${field(t('field.jointNames'),'joint-names',c.joint_names||'')}</div>
+      <div class="form-row" id="joint-settings" style="display:${kind==='joints'?'grid':'none'}">${field(t('field.jointDof'),'joint-dof',c.joint_dof,'number')}${field(t('field.jointNames'),'joint-names',c.joint_names||'','text',t('guide.jointNamesHint'))}</div>
     </div>
+    ${modelPanel()}
+    ${capabilitiesPanel()}
     <details class="interface-advanced"><summary>${t('connect.advanced')}</summary><div class="form-row">${topicField(t('field.captureTopic'),'capture-topic',c.capture_topic||'','capture',true)}${topicField(t('field.statusTopic'),'status-topic',c.status_topic||'','status',true)}</div><div class="help">${t('connect.statusIsOutput')}</div></details>
     `,`<div class="actions connection-actions">${btn('discover-topics',t('action.discoverTopics'),'scan','')}${active?btn('disconnect-robot',t('action.disconnectRobot'),'square',''):btn('connect-robot',t('action.connectRobot'),'plug','primary')}</div><div class="connection-note" id="connection-message">${connected?t('connect.connectedHint'):t('connect.connectionHint')}</div>`,true)}
   </div></div></div>`
@@ -276,7 +373,7 @@ function segmentedControl(id,current,options,extraClass='amber'){
   return `<div class="segmented ${extraClass}" id="${id}"><span class="segmented-indicator" aria-hidden="true"></span>${options.map(([value,label])=>`<button data-value="${value}" class="${current===value?'active':''}">${label}</button>`).join('')}</div>`
 }
 function qualitySegment(id,current){return segmentedControl(id,current,[['standard',t('quality.standard')],['strict',t('quality.strict')],['minimal',t('quality.minimal')]])}
-function renderIntrinsics(){const x=state.data.intrinsics||{},cam=state.data.camera;const target=state.intrinsicQuality==='strict'?15:state.intrinsicQuality==='minimal'?3:10;const pct=Math.min(100,(x.count||0)/target*100);return `<div class="page">${pageHead(t('intrinsics.kicker'),t('intrinsics.title'),t('intrinsics.desc'),btn('go-handeye',t('intrinsics.next'),'chevron'))}
+function renderIntrinsics(){const x=state.data.intrinsics||{},cam=state.data.camera;const target=state.intrinsicQuality==='strict'?15:state.intrinsicQuality==='minimal'?3:10;const pct=Math.min(100,(x.count||0)/target*100);return `<div class="page">${pageHead(t('intrinsics.kicker'),t('intrinsics.title'),t('intrinsics.desc'),btn('go-handeye',t('intrinsics.next'),'chevron'))}${workflowHelp('guide.intrinsicsWorkflow')}
 <div class="grid preview-layout">${preview()}<div class="stack">${card(t('intrinsics.boardTitle'),t('intrinsics.boardDesc'),'scan',boardFields(),`${btn('save-board',t('intrinsics.saveBoard'),'refresh-cw','primary')}`)}
 ${card(t('intrinsics.captureTitle'),t('intrinsics.captureDesc'),'camera',`<div class="progress-label"><span>${t('intrinsics.captured',{count:x.count||0})}</span><span id="intrinsic-target">${t('intrinsics.minimum',{count:target})}</span></div><div class="progress-track"><div class="progress-bar" id="intrinsic-progress" style="width:${pct}%"></div></div><div style="margin-top:14px"><div class="field"><label>${t('intrinsics.quality')}</label>${qualitySegment('intrinsic-quality',state.intrinsicQuality)}</div></div><div class="grid two" style="margin-top:13px"><div class="metric"><div class="metric-label">${t('intrinsics.chessboard')}</div><div class="metric-value" id="board-live" style="font-size:17.25px;color:${cam.board_found?'var(--success)':'var(--warning)'}">${cam.board_found?t('status.detected'):t('status.notDetected')}</div></div><div class="metric"><div class="metric-label">${t('intrinsics.file')}</div><div class="metric-value" style="font-size:17.25px;color:${x.exists?'var(--success)':'var(--text-secondary)'}">${x.exists?t('status.ready'):t('status.pending')}</div></div></div>`,`<div class="actions">${btn('capture-intrinsic',t('intrinsics.capture'),'camera','primary large',cam.open?'':'disabled')}${btn('solve-intrinsic',t('intrinsics.solveSave'),'flask','',x.count>=target?'':'disabled')}${btn('clear-intrinsic',t('action.clear'),'trash','danger')}${btn('import-camera-info',t('action.useCameraInfo'),'plug')}${btn('import-intrinsics',t('action.importIntrinsics'),'folder')}</div>`,true)}
 ${state.intrinsicResult?`<div class="callout">${icon('check')}<div><b>${t('intrinsics.saved')}</b><br>RMS ${n(state.intrinsicResult.reprojection_error_px,4)} px · Median ${n(state.intrinsicResult.reprojection_error_median_px,4)} px · Max ${n(state.intrinsicResult.reprojection_error_max_px,4)} px</div></div>`:''}</div></div></div>`}
@@ -298,15 +395,15 @@ function handeyeQualitySegment(){
   return count ? html.replaceAll('<button ', '<button disabled title="'+escapeHtml(t('samples.qualityLocked'))+'" ') : html
 }
 
-function renderHandeye(){const h=state.data.handeye||{},ros=state.data.ros||{};const target=qualityTarget(),pct=Math.min(100,(h.count||0)/target*100);return `<div class="page">${pageHead(t('handeye.kicker'),t('handeye.title'),t('handeye.desc'),btn('go-solve',t('handeye.next'),'chevron'))}
-<div class="grid preview-layout">${preview()}<div class="stack">${card(t('handeye.robotPose'),ros.running?t('handeye.robotAutoReceiving'):t('handeye.robotChooseSource'),'target',`<div class="pose-box" id="pose-live">${escapeHtml(poseText())}</div><div style="margin-top:12px"><div class="field"><label>${t('handeye.source')}</label>${segmentedControl('sample-mode',state.sampleMode,[['auto',t('handeye.auto')],['manual',t('handeye.manual')]])}</div></div>${manualInputPanel()}`)}
+function renderHandeye(){const h=state.data.handeye||{},ros=state.data.ros||{};const target=qualityTarget(),pct=Math.min(100,(h.count||0)/target*100);return `<div class="page">${pageHead(t('handeye.kicker'),t('handeye.title'),t('handeye.desc'),btn('go-solve',t('handeye.next'),'chevron'))}${workflowHelp('guide.handeyeWorkflow')}
+<div class="grid preview-layout">${preview()}<div class="stack">${card(t('handeye.robotPose'),ros.running?t('handeye.robotAutoReceiving'):t('handeye.robotChooseSource'),'target',`<div class="pose-box" id="pose-live">${escapeHtml(poseText())}</div><div style="margin-top:12px"><div class="field"><label>${t('handeye.source')}</label>${segmentedControl('sample-mode',state.sampleMode,[['auto',t('handeye.auto')],['manual',t('handeye.manual')]])}</div></div>${manualInputPanel()}<div class="help">${t('guide.samplePoseHint')}</div>`)}
 ${boardEditor()}
-${card(t('handeye.collectionTitle'),t('handeye.collectionDesc'),'scan',`<div class="progress-label"><span>${t('handeye.captured',{count:h.count||0})}</span><span id="handeye-recommended">${t('handeye.recommended',{count:target})}</span></div><div class="progress-track"><div class="progress-bar" id="handeye-progress" style="width:${pct}%"></div></div><div style="margin-top:14px"><div class="field"><label>${t('intrinsics.quality')}</label>${handeyeQualitySegment()}</div></div><div class="grid three" style="margin-top:13px"><div class="metric"><div class="metric-label">${t('handeye.samples')}</div><div class="metric-value">${h.count||0}</div></div><div class="metric"><div class="metric-label">${t('handeye.camera')}</div><div class="metric-value" style="font-size:16.1px;color:${state.data.camera?.open?'var(--success)':'var(--warning)'}">${state.data.camera?.open?t('status.ready'):t('status.offline')}</div></div><div class="metric"><div class="metric-label">${t('handeye.robot')}</div><div class="metric-value" id="robot-source-status" style="font-size:16.1px;color:${state.sampleMode==='manual'||ros.pose?'var(--success)':'var(--warning)'}">${state.sampleMode==='manual'?t('status.manual'):ros.pose?t('status.ready'):t('status.waiting')}</div></div></div>`,`<div class="actions">${btn('capture-handeye',t('handeye.capture'),'target','primary large')}${btn('save-samples',t('handeye.save'),'save')}${btn('import-samples',t('samples.import'),'folder')}${btn('clear-samples',t('action.clear'),'trash','danger')}</div>`,true)}${sampleManager()}</div></div></div>`}
+${card(t('handeye.collectionTitle'),t('handeye.collectionDesc'),'scan',`<div class="progress-label"><span>${t('handeye.captured',{count:h.count||0})}</span><span id="handeye-recommended">${t('handeye.recommended',{count:target})}</span></div><div class="progress-track"><div class="progress-bar" id="handeye-progress" style="width:${pct}%"></div></div><div style="margin-top:14px"><div class="field"><label>${t('intrinsics.quality')}</label>${handeyeQualitySegment()}<div class="help">${t('guide.qualityHint')}</div></div></div><div class="grid three" style="margin-top:13px"><div class="metric"><div class="metric-label">${t('handeye.samples')}</div><div class="metric-value">${h.count||0}</div></div><div class="metric"><div class="metric-label">${t('handeye.camera')}</div><div class="metric-value" style="font-size:16.1px;color:${state.data.camera?.open?'var(--success)':'var(--warning)'}">${state.data.camera?.open?t('status.ready'):t('status.offline')}</div></div><div class="metric"><div class="metric-label">${t('handeye.robot')}</div><div class="metric-value" id="robot-source-status" style="font-size:16.1px;color:${state.sampleMode==='manual'||ros.pose?'var(--success)':'var(--warning)'}">${state.sampleMode==='manual'?t('status.manual'):ros.pose?t('status.ready'):t('status.waiting')}</div></div></div>`,`<div class="actions">${btn('capture-handeye',t('handeye.capture'),'target','primary large')}${btn('save-samples',t('handeye.save'),'save')}${btn('import-samples',t('samples.import'),'folder')}${btn('clear-samples',t('action.clear'),'trash','danger')}</div>`,true)}${sampleManager()}</div></div></div>`}
 
 function matrixHtml(result){const m=result?.transform_matrix;if(!Array.isArray(m)||m.length!==4)return `<div class="pose-box">${t('solve.waitingResult')}</div>`;return `<div class="result-matrix">${m.flat().map(v=>`<span>${n(v,6)}</span>`).join('')}</div>`}
-function renderSolve(){const h=state.data.handeye||{};const r=state.solveResult;return `<div class="page">${pageHead(t('solve.kicker'),t('solve.title'),t('solve.desc'))}
+function renderSolve(){const h=state.data.handeye||{};const r=state.solveResult;return `<div class="page">${pageHead(t('solve.kicker'),t('solve.title'),t('solve.desc'))}${workflowHelp('guide.solveWorkflow')}
 <div class="grid two" style="margin-bottom:14px"><div class="metric"><div class="metric-label">samples.yaml</div><div class="metric-value" style="font-size:17.25px;color:${h.samples_exists?'var(--success)':'var(--warning)'}">${h.samples_exists?t('status.ready'):t('status.notSaved')}</div><div class="metric-meta">${escapeHtml(h.samples_path||'')}</div></div><div class="metric"><div class="metric-label">${t('solve.result')}</div><div class="metric-value" style="font-size:17.25px;color:${r?'var(--success)':'var(--text-secondary)'}">${r?t('status.solved'):t('status.waiting')}</div><div class="metric-meta">samples_result.yaml</div></div></div>
-<div class="grid preview-layout"><div class="stack">${card(t('solve.pipeline'),t('solve.pipelineDesc'),'flask',`<div class="field"><label>${t('solve.mode')}</label>${segmentedControl('solve-mode',state.solveMode,[['robust',t('solve.robust')],['minimal',t('solve.opencv')],['ba',t('solve.ba')]])}</div><div class="divider"></div><div class="actions">${btn('run-diagnose',t('action.diagnose'),'scan')}${btn('run-solve',t('action.solve'),'play','primary')}</div>`)}
+<div class="grid preview-layout"><div class="stack">${card(t('solve.pipeline'),t('solve.pipelineDesc'),'flask',`<div class="field"><label>${t('solve.mode')}</label>${segmentedControl('solve-mode',state.solveMode,[['robust',t('solve.robust')],['minimal',t('solve.opencv')],['ba',t('solve.ba')]])}<div class="help">${t('guide.solveModeHint')}</div></div><div class="divider"></div><div class="actions">${btn('run-diagnose',t('action.diagnose'),'scan')}${btn('run-solve',t('action.solve'),'play','primary')}</div>`)}
 ${card(t('solve.transform'),t('solve.transformDesc'),'target',`${r?`<div class="help">${escapeHtml(r.parent_frame||'?')} → ${escapeHtml(r.child_frame||'?')} · m</div>`:''}${matrixHtml(r)}${r?`<div class="grid two" style="margin-top:12px"><div class="metric"><div class="metric-label">${t('solve.translationRms')}</div><div class="metric-value">${n(r.translation_rms_mm,3)}<small>mm</small></div></div><div class="metric"><div class="metric-label">${t('solve.rotationRms')}</div><div class="metric-value">${n(r.rotation_rms_deg,3)}<small>deg</small></div></div></div>`:''}`)}</div>
 ${r?`<div class="actions" style="margin:10px 0">${btn('copy-matrix',t('action.copyMatrix'),'save')}${btn('export-matrix',t('action.exportMatrix'),'folder')}</div>`:''}
 ${card(t('validation.freezeTitle'),t('validation.freezeHint'),'check',`<div class="actions">${btn('freeze-validation',t('validation.freeze'),'check','primary')}${btn('go-validation',t('validation.goto'),'arrow-right')}</div>`)}
@@ -337,25 +434,46 @@ function validationReport(report){
   const list=rows.map(r=>`<tr><td>#${escapeHtml(r.id)}</td><td>${n(r.translation_error_mm,3)}</td><td>${n(r.rotation_error_deg,3)}</td><td>${n(r.prediction_reprojection_rms_px,3)}</td></tr>`).join('')
   return `<div class="validation-status" style="--status-color:${badgeColor}"><b>${status}</b><span>${t('validation.reportCount',{count:rows.length})}</span></div>${metrics}${validationTrend(report)}<div class="validation-table-wrap"><table class="validation-table"><thead><tr><th>ID</th><th>${t('validation.translation')} mm</th><th>${t('validation.rotation')} °</th><th>${t('validation.projection')} px</th></tr></thead><tbody>${list}</tbody></table></div><p class="help">${t('validation.limitNote')}</p>`
 }
+function renderSpatialValidation(){
+ const v=state.data.validation||{},sp=state.data.spatial||{},ref=sp.contact,m=state.data.robot_model||{}
+ const ready=v.reference_status==='ready',links=m.fixed_links?.length?m.fixed_links:(m.links||[]),preferred=state.spatialLink|| (links.includes('tip')?'tip':links.includes('tool0')?'tool0':links[0]||'')
+ if(!links.includes(preferred))state.spatialLink=preferred
+ const errors=(sp.measurements||[])
+ const rows=errors.map(r=>`<tr><td>#${r.id}</td><td>${n(r.error_xyz_mm?.[0],2)}</td><td>${n(r.error_xyz_mm?.[1],2)}</td><td>${n(r.error_xyz_mm?.[2],2)}</td><td>${n(r.error_mm,2)}</td></tr>`).join('')
+ return `<div class="page">${pageHead(t('validation.kicker'),t('spatial.title'),t('spatial.subtitle'))}
+  ${card(t('spatial.modeTitle'),t('spatial.modeIntro'),'target',`<div class="interface-guide">${icon('info')}<span>${t('spatial.manualOnly')}</span></div><div class="help">${t('spatial.servoRequirements')}</div>`)}
+  <div class="validation-mode">${segmentedControl('validation-mode','spatial',[['offline',t('validation.offline')],['live',t('validation.live')],['spatial',t('spatial.mode')]])}</div>
+  <div class="grid preview-layout">${preview()}<div class="stack">
+  ${card(t('spatial.step1'),t('spatial.step1Desc'),'check',`<div class="help">${ready?t('validation.ready'):t('spatial.needFreeze')}</div><div class="help">${m.loaded?`${escapeHtml(m.name)} · ${m.links.length} Links`:t('guide.modelMissing')}</div>`,`<div class="actions">${btn('spatial-freeze',t('validation.freeze'),'check')}${btn('spatial-connect',t('spatial.gotoConnect'),'plug')}</div>`)}
+  ${card(t('spatial.step2'),t('spatial.step2Desc'),'target',`<div class="field"><label for="spatial-tool-link">${t('spatial.tool')}</label><select class="control" id="spatial-tool-link">${links.map(link=>`<option value="${escapeHtml(link)}" ${link===preferred?'selected':''}>${escapeHtml(link)}</option>`).join('')}</select><div class="help">${t('spatial.toolHint')}</div></div><div class="field"><label for="spatial-corner-id">${t('spatial.corner')}</label><input class="control" type="number" id="spatial-corner-id" min="0" step="1" value="${state.spatialCorner??0}"/><div class="help">${t('spatial.cornerHint')}</div></div>
+  <div class="pose-box" style="margin-top:10px">${ref?`${t('spatial.point')}: ${ref.point_m.map(v=>n(v,5)).join('  ')} m\n${escapeHtml(ref.link)} · ID ${ref.corner_id}`:t('spatial.noContact')}</div>`,`<div class="actions">${btn('spatial-resolve',t('spatial.previewLink'),'scan','',m.loaded?'':'disabled')}${btn('spatial-contact',t('spatial.recordContact'),'target','primary',ready&&m.loaded?'':'disabled')}</div>`,true)}
+  ${card(t('spatial.step3'),t('spatial.step3Desc'),'camera',`<div class="help">${t('spatial.measureHint')}</div><div class="grid two" style="margin-top:12px">${validationMetric(t('spatial.rms'),sp.rms_mm,'mm')}${validationMetric(t('spatial.max'),sp.max_mm,'mm')}</div><div class="help">${t('spatial.count',{count:sp.count||0})}</div>`,`<div class="actions">${btn('spatial-measure',t('spatial.measure'),'scan','primary',ref?'':'disabled')}${btn('spatial-clear',t('spatial.clear'),'trash','danger',ref?'':'disabled')}</div>`,true)}
+  </div></div>
+  ${card(t('spatial.report'),t('spatial.reportDesc'),'flask',`<div class="validation-table-wrap"><table class="validation-table"><thead><tr><th>ID</th><th>X mm</th><th>Y mm</th><th>Z mm</th><th>3D mm</th></tr></thead><tbody>${rows||`<tr><td colspan="5">${t('spatial.noData')}</td></tr>`}</tbody></table></div><div class="help">${t('spatial.limit')}</div>`)}
+ </div>`
+}
+
 function renderValidation(){
   const v=state.data.validation||{},mode=state.validationMode,ready=v.reference_status==='ready', report=v.reports?.[mode]||(mode==='live'?v.live_preview:null)
+  if(mode==='spatial')return renderSpatialValidation()
   const online=mode==='live'
   const frames=(v.frames||[]).join(' → ')||'—'
   const source=online?(v.live_samples_path||'validation_samples.yaml'):(v.import_path||t('validation.chooseDataset'))
-  return `<div class="page">${pageHead(t('validation.kicker'),t('validation.title'),t('validation.desc'))}
+  return `<div class="page">${pageHead(t('validation.kicker'),t('validation.title'),t('validation.desc'))}${workflowHelp('guide.validationWorkflow')}
   ${card(t('validation.fixed'),t('validation.fixedHint'),'check',`<div class="validation-fixed"><div><span class="validation-status-label ${ready?'valid':''}">${ready?t('validation.ready'):v.reference_status==='stale'?t('validation.stale'):t('validation.missing')}</span><div class="help">${escapeHtml(frames)}</div><div class="help">${t('validation.trainCount',{count:v.train_count||0})}</div></div><div class="actions">${btn('validation-freeze',t('validation.freeze'),'check')}</div></div>`)}
-  <div class="validation-mode">${segmentedControl('validation-mode',mode,[['offline',t('validation.offline')],['live',t('validation.live')]])}</div>
+  <div class="validation-mode">${segmentedControl('validation-mode',mode,[['offline',t('validation.offline')],['live',t('validation.live')],['spatial',t('spatial.mode')]])}</div>
   <div class="grid preview-layout">${online?preview():card(t('validation.datasetTitle'),t('validation.datasetHint'),'folder',`<div class="pose-box validation-path">${escapeHtml(source)}</div><div class="help">${t('validation.independence')}</div>`,`<div class="actions">${btn('validation-import',t('validation.import'),'folder','primary')}</div>`,true)}
   <div class="stack">${online?card(t('validation.liveTitle'),t('validation.liveHint'),'camera',`<div class="metric"><div class="metric-label">${t('validation.liveCount')}</div><div class="metric-value">${v.live_count||0}</div></div><div class="validation-legend"><span style="--series:#22c55e">${t('validation.observed')}</span><span style="--series:#f97316">${t('validation.predicted')}</span></div><div class="help">${t('validation.liveSafety')}</div>`,`<div class="actions">${btn('validation-capture',t('validation.capture'),'target','primary',ready?'':'disabled')}${btn('validation-clear',t('validation.clear'),'trash','danger')}</div>`,true):card(t('validation.offlineTitle'),t('validation.offlineHint'),'scan',`<div class="help">${t('validation.offlineInfo')}</div>`)}
   ${card(t('validation.runTitle'),t('validation.runHint'),'flask',`<div class="help">${t('validation.refNote')}</div><div class="form-row three validation-thresholds">${field(t('validation.limitTrans'),'limit-translation',state.validationThresholds.translation_rms_mm,'number')}${field(t('validation.limitRot'),'limit-rotation',state.validationThresholds.rotation_rms_deg,'number')}${field(t('validation.limitProj'),'limit-projection',state.validationThresholds.projection_rms_px,'number')}</div>`,`<div class="actions">${btn('validation-run',t('validation.run'),'play','primary',ready&&(online?(v.live_count||0)>0:!!v.import_path)?'':'disabled')}${btn('validation-export',t('validation.export'),'save','',v.reports?.[mode]?'':'disabled')}</div>`,true)}</div></div>
   ${card(t('validation.reportTitle'),t('validation.reportDesc'),'check',validationReport(report))}</div>`
 }
 
-function renderSettings(){const rt=state.runtime||{};const installed=Boolean(rt.runtimeInstalled);return `<div class="page">${pageHead(t('settings.kicker'),t('settings.title'),t('settings.desc'))}<div class="grid two">${card(t('settings.appearance'),t('settings.appearanceDesc'),'sun',`<div class="field"><label>${t('settings.theme')}</label><div class="theme-selector" id="theme-segment">${themeSettingsChoice('system',t('appearance.system'))}${themeSettingsChoice('dark',t('appearance.dark'))}${themeSettingsChoice('light',t('appearance.light'))}</div></div>`)}${card(t('settings.language'),t('settings.languageDesc'),'info',`<div class="field"><label>${t('settings.languageLabel')}</label>${segmentedControl('language-selector',state.language,[['zh-CN',t('settings.zhCN')],['en',t('settings.english')]],'amber')}</div>`)}${card(t('settings.runtime'),t('settings.runtimeDesc'),'terminal',`<div class="runtime-health"><div>${dot(installed?'success':'warning')}<b id="runtime-health-label">${installed?t('runtime.ready'):t('runtime.notInstalled')}</b></div><span id="runtime-health-path">${escapeHtml(rt.runtimePython||'~/.local/share/handeye-calibration/.venv/bin/python')}</span></div><div class="pose-box" id="runtime-info-box" style="margin-top:11px">Ubuntu : ${escapeHtml(rt.ubuntu||'unknown')}
+// Keep settings cards in independent columns so a collapsed card never stretches to match an expanded sibling.
+function renderSettings(){const rt=state.runtime||{};const installed=Boolean(rt.runtimeInstalled);return `<div class="page">${pageHead(t('settings.kicker'),t('settings.title'),t('settings.desc'))}<div class="settings-layout"><div class="settings-column">${card(t('settings.appearance'),t('settings.appearanceDesc'),'sun',`<div class="field"><label>${t('settings.theme')}</label><div class="theme-selector" id="theme-segment">${themeSettingsChoice('system',t('appearance.system'))}${themeSettingsChoice('dark',t('appearance.dark'))}${themeSettingsChoice('light',t('appearance.light'))}</div></div>`)}${card(t('settings.runtime'),t('settings.runtimeDesc'),'terminal',`<div class="runtime-health"><div>${dot(installed?'success':'warning')}<b id="runtime-health-label">${installed?t('runtime.ready'):t('runtime.notInstalled')}</b></div><span id="runtime-health-path">${escapeHtml(rt.runtimePython||'~/.local/share/handeye-calibration/.venv/bin/python')}</span></div><div class="pose-box" id="runtime-info-box" style="margin-top:11px">Ubuntu : ${escapeHtml(rt.ubuntu||'unknown')}
 ROS    : ${escapeHtml(rt.rosDistro||'not detected')}
 Setup  : ${escapeHtml(rt.rosSetup||'not detected')}
 Python : ${escapeHtml(rt.python||'unknown')}
-Interface: HandEye</div><div class="help" style="margin-top:10px">${t('runtime.help')}</div><div class="mini-log ${state.runtimeInstallLog?'':'hidden'}" id="runtime-install-log">${escapeHtml(state.runtimeInstallLog.slice(-5000))}</div>`,`<div class="actions"><button class="btn primary" id="install-runtime" ${state.runtimeInstallState==='running'?'disabled':''}>${icon('play')}<span id="install-runtime-label">${state.runtimeInstallState==='running'?t('runtime.installing'):installed?t('runtime.repair'):t('runtime.install')}</span></button><button class="btn" id="restart-backend">${icon('terminal')}${t('runtime.restart')}</button></div>`,true)}</div></div>`}
+Interface: HandEye</div><div class="help" style="margin-top:10px">${t('runtime.help')}</div><div class="mini-log ${state.runtimeInstallLog?'':'hidden'}" id="runtime-install-log">${escapeHtml(state.runtimeInstallLog.slice(-5000))}</div>`,`<div class="actions"><button class="btn primary" id="install-runtime" ${state.runtimeInstallState==='running'?'disabled':''}>${icon('play')}<span id="install-runtime-label">${state.runtimeInstallState==='running'?t('runtime.installing'):installed?t('runtime.repair'):t('runtime.install')}</span></button><button class="btn" id="restart-backend">${icon('terminal')}${t('runtime.restart')}</button></div>`,true)}</div><div class="settings-column">${card(t('settings.language'),t('settings.languageDesc'),'info',`<div class="field"><label>${t('settings.languageLabel')}</label>${segmentedControl('language-selector',state.language,[['zh-CN',t('settings.zhCN')],['en',t('settings.english')]],'amber')}</div>`)}</div></div>`}
 function renderAbout(){return `<div class="page">${pageHead(t('about.kicker'),t('about.title'),t('about.desc'))}<div class="grid two">${card(t('about.experience'),t('about.experienceDesc'),'info',`<div class="callout">${icon('info')}<div><b>${t('about.focusTitle')}</b><br>${t('about.focusBody')}</div></div>`)}${card(t('about.core'),t('about.coreDesc'),'check',`<div class="stack"><div class="runtime-line">${dot('success')} ${t('about.protected',{name:'algorithm_runner.py'})}</div><div class="runtime-line">${dot('success')} ${t('about.protected',{name:'calibration_engine.py'})}</div><div class="runtime-line">${dot('success')} ${t('about.protected',{name:'ros_interface.py'})}</div><div class="runtime-line">${dot('success')} ${t('about.protected',{name:'algorithms/*'})}</div></div>`)}</div></div>`}
 
 function animateCurrentPage(){
@@ -533,6 +651,7 @@ function validateConnection(c){
   if(c.camera_source==='ros'&&!c.image_topic)return t('connect.needImage')
   if(c.ros_input_type!=='tf'&&!c.pose_topic)return t('connect.needPose')
   if(c.ros_input_type==='pose'&&!c.robot_end_frame.trim())return t('connect.needEnd')
+  if(c.ros_input_type==='joints'&&!state.data.robot_model?.loaded)return t('guide.jointsNeedModel')
   if(['tf','joints'].includes(c.ros_input_type)&&(!c.robot_base_frame.trim()||!c.robot_end_frame.trim()))return t('connect.needFrames')
   const check=(value,kind)=>!value||availableTopics(kind).includes(value)
   if(state.discoveredOnce){
@@ -602,15 +721,66 @@ async function inspectSelection(kind,value){
     }
   }catch(e){toast(t('toast.operationFailed'),e.message||String(e),'warning')}
 }
+function bindCollapsibleCards(){
+  $$('[data-card-toggle]').forEach(toggle=>toggle.addEventListener('click',()=>{
+    const card=toggle.closest('.card')
+    if(!card || card.dataset.cardKey!==toggle.dataset.cardToggle)return
+    const expanded=toggle.getAttribute('aria-expanded')!=='true'
+    setCardExpanded(card.dataset.cardKey,expanded)
+    card.classList.toggle('collapsed',!expanded)
+    toggle.setAttribute('aria-expanded',String(expanded))
+    const label=expanded?(state.language==='zh-CN'?'收起':'Collapse'):(state.language==='zh-CN'?'展开':'Expand')
+    toggle.setAttribute('aria-label',label)
+    toggle.title=label
+    // Keep the DOM intact so forms and controls do not lose their unsaved values.
+    card.querySelectorAll(':scope > .card-body,:scope > .card-footer,:scope > .preview-surface').forEach(content=>{
+      content.hidden=!expanded
+    })
+  }))
+  // The original board editor uses native details. Persist its expanded state too.
+  $$('.board-inline-editor').forEach(details=>{
+    const key=cardKey('board-editor','board-editor')
+    details.open=isCardExpanded(key)
+    details.addEventListener('toggle',()=>{
+      if(details.isConnected)setCardExpanded(key,details.open)
+    })
+  })
+}
 function bindPage(){
+  bindCollapsibleCards()
   $('#board-type')?.addEventListener('change',e=>{
     const charuco=e.target.value==='charuco'
     $('#board-chess-fields').style.display=charuco?'none':'grid'
     $('#board-charuco-fields').style.display=charuco?'block':'none'
     if(charuco&&Number($('#square-mm').value)<=Number($('#charuco-marker').value))$('#square-mm').value=20
   })
-  bindSegment('validation-mode','validationMode',()=>{void api?.request('set_validation_overlay',{enabled:state.validationMode==='live'});renderPage(false)});
+  bindSegment('validation-mode','validationMode',()=>{void api?.request('set_validation_overlay',{enabled:state.validationMode==='live',spatial:state.validationMode==='spatial'});renderPage(false)});
   bindSegment('intrinsic-quality','intrinsicQuality',updateIntrinsicQualityView);bindSegment('handeye-quality','handeyeQuality',updateHandeyeQualityView);bindSegment('sample-mode','sampleMode',updateSampleModeView);bindSegment('solve-mode','solveMode')
+  $('#spatial-tool-link')?.addEventListener('change',e=>{state.spatialLink=e.target.value})
+  $('#spatial-corner-id')?.addEventListener('change',e=>{state.spatialCorner=Number(e.target.value)})
+  $('#spatial-connect')?.addEventListener('click',()=>navigate('connect'))
+  $('#spatial-freeze')?.addEventListener('click',async()=>{
+    if(!window.confirm(t('validation.confirmFreeze')))return
+    await request('freeze_validation',{},t('validation.frozen'));await refreshState()
+  })
+  $('#spatial-resolve')?.addEventListener('click',async()=>{
+    try{const r=await request('resolve_tool_link',{link:$('#spatial-tool-link').value});toast(t('spatial.previewLink'),r.position_m.map(x=>n(x,5)).join(', ')+' m','success')}
+    catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
+  $('#spatial-contact')?.addEventListener('click',async()=>{
+    if(!window.confirm(t('spatial.confirmContact')))return
+    const link=$('#spatial-tool-link').value,corner_id=Number($('#spatial-corner-id').value)
+    try{await request('record_spatial_contact',{link,corner_id},t('spatial.recordContact'));state.spatialLink=link;state.spatialCorner=corner_id;await refreshState();toast(t('spatial.recordContact'),t('spatial.recorded'),'success')}
+    catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
+  $('#spatial-measure')?.addEventListener('click',async()=>{
+    try{const r=await request('measure_spatial_target',{},t('spatial.measure'));await refreshState();toast(t('spatial.measure'),`${n(r.error_mm,2)} mm`,'success')}
+    catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
+  $('#spatial-clear')?.addEventListener('click',async()=>{
+    if(!window.confirm(t('spatial.confirmClear')))return
+    await request('clear_spatial',{});await refreshState()
+  })
   $('#camera-source')?.addEventListener('change',e=>{const ros=e.target.value==='ros';$('#camera-ros-fields').style.display=ros?'grid':'none';$('#camera-local-fields').style.display=ros?'none':'grid'})
   $('#ros-input-type')?.addEventListener('change',e=>{
     const mode=e.target.value
@@ -625,6 +795,9 @@ function bindPage(){
         `<div class="field"><label for="robot-base-frame">${t('field.baseFrame')} · ${t('connect.fromTransform')}</label><input class="control" id="robot-base-frame" readonly placeholder="${t('connect.waitingTransform')}"/></div><div class="field"><label for="robot-end-frame">${t('field.endFrame')} · ${t('connect.fromTransform')}</label><input class="control" id="robot-end-frame" readonly placeholder="${t('connect.waitingTransform')}"/></div>`:
         `${field(t('field.baseFrame'),'robot-base-frame',c.robot_base_frame||'')}${field(t('field.endFrame'),'robot-end-frame',c.robot_end_frame||'')}`
     }
+    const guide=$('#robot-input-guide')
+    if(guide)guide.innerHTML=icon('info')+'<span>'+({transform:t('guide.transform'),pose:t('guide.pose'),tf:t('guide.tf'),joints:t('guide.joints')}[mode]||'')+'</span>'
+    if(mode==='joints'&&!state.data.robot_model?.loaded){toast(t('guide.modelTitle'),t('guide.joints'),'warning')}
     delete state.topicDetails.transform
     if(mode!=='transform')for(const id of ['robot-base-frame','robot-end-frame'])$('#'+id)?.addEventListener('input',()=>state.autoFilled.delete(id))
   })
@@ -644,6 +817,22 @@ function bindPage(){
       renderPage(false)
       toast(t('action.discoverTopics'),`${state.discoveredTopics.length} ${t('connect.topicCount')}`,'success')
     }finally{if($('#discover-topics'))$('#discover-topics').disabled=false}
+  })
+  $('#import-robot-model')?.addEventListener('click',async()=>{
+    try{
+      const path=await api?.selectRobotModel?.()
+      if(!path)return
+      await request('import_robot_model',{path},t('guide.importModel'))
+      await refreshState();toast(t('guide.modelTitle'),t('guide.imported'),'success')
+    }catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
+  $('#load-robot-description')?.addEventListener('click',async()=>{
+    try{await request('import_ros_model',{},t('guide.rosModel'));await refreshState();toast(t('guide.modelTitle'),t('guide.imported'),'success')}
+    catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
+  $('#clear-robot-model')?.addEventListener('click',async()=>{
+    if(!window.confirm(t('guide.confirmClear')))return
+    await request('clear_robot_model',{},t('guide.clearModel'));await refreshState()
   })
   $('#browse-output')?.addEventListener('click',async()=>{const p=await api?.selectDirectory($('#output-dir').value);if(p)$('#output-dir').value=p})
   $('#connect-robot')?.addEventListener('click',async()=>{

@@ -365,6 +365,14 @@ ipcMain.handle('handeye:select-intrinsics', async () => {
   })
   return result.canceled ? '' : (result.filePaths[0] || '')
 })
+ipcMain.handle('handeye:select-robot-model', async () => {
+  const result = await dialog.showOpenDialog(win, {
+    title: '导入机械臂 URDF / Xacro 模型',
+    properties: ['openFile'],
+    filters: [{ name: 'Robot model', extensions: ['urdf', 'xacro'] }]
+  })
+  return result.canceled ? '' : (result.filePaths[0] || '')
+})
 ipcMain.handle('handeye:select-samples', async (_event, initial) => {
   const initialDirectory = typeof initial === 'string' && fs.existsSync(initial)
     ? initial : app.getPath('documents')

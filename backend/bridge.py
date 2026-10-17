@@ -57,7 +57,8 @@ def _install_zip_strict_compat() -> None:
 
 _install_zip_strict_compat()
 
-from algorithm_runner import joints_to_pose, run_algorithm
+from algorithm_runner import run_algorithm
+from robot_model import RobotModel, pose_from_matrix
 from calibration_engine import CameraSession, HandEyeCollection, IntrinsicCalibration, detect_chessboard, rpy_to_quaternion
 from calibration_board import CalibrationBoard, positive_int
 from validation_engine import (freeze_solution, load_frozen, validate_metadata,
@@ -122,6 +123,15 @@ class Bridge:
         self.config_path = data_dir / "app_config.json"
         first_run = not self.config_path.exists()
         self.config = AppConfig.load(self.config_path)
+        self.robot_model = None
+        self.robot_model_error = ''
+        if self.config.robot_model_path:
+            try:
+                self.robot_model = RobotModel.from_file(self.config.robot_model_path)
+            except Exception as exc:
+                self.robot_model_error = str(exc)
+        self.spatial_contact = None
+        self.spatial_measurements = []
         # The original main-branch GUI intentionally leaves the optional ROS
         # capture trigger empty on first run; preserve that behavior here
         if first_run:
@@ -158,6 +168,7 @@ class Bridge:
         self.validation_reports = {'offline': None, 'live': None}
         self.validation_live_preview = None
         self.validation_overlay_enabled = False
+        self.spatial_overlay_enabled = False
         self.active_job = None
         self.latest_pose: RosPose | None = None
         self.latest_pose_at = None
@@ -264,6 +275,9 @@ class Bridge:
         self.validation_reports = {'offline': None, 'live': None}
         self.validation_live_preview = None
         self.validation_overlay_enabled = False
+        self.spatial_overlay_enabled = False
+        self.spatial_contact=None
+        self.spatial_measurements=[]
 
     def _emit(self, event: str, data: Any = None) -> None:
         self.out.send({"kind": "event", "event": event, "data": data})
@@ -318,6 +332,7 @@ class Bridge:
                 "pose_topic": self.config.pose_topic,
                 "joint_dof": self.config.joint_dof,
                 "joint_names": self.config.joint_names,
+                "robot_model_path": self.config.robot_model_path,
                 "capture_topic": self.config.capture_topic,
                 "status_topic": self.config.status_topic,
             },
@@ -357,9 +372,35 @@ class Bridge:
                 "result_path": str(samples.with_name(f"{samples.stem}_result.yaml")),
             },
             "output_dir": str(out),
+            "robot_model": self._model_state(),
+            "spatial": self._spatial_state(),
             "validation": self._validation_state(),
             "last_error": self.last_error,
         }
+
+    def _model_state(self):
+        if self.robot_model is None:
+            return {"loaded": False, "error": self.robot_model_error, "links": [], "ready_for_joint_fk": False}
+        data = self.robot_model.info()
+        pose = self.latest_pose
+        data.update(loaded=True, error='', source=self.config.robot_model_path,
+                    ready_for_joint_fk=True)
+        if pose:
+            try:
+                data['fixed_links'] = [name for name in data['links']
+                    if not self.robot_model.movable_joints(pose.child_frame_id,name)]
+            except ValueError:
+                data['fixed_links'] = []
+        return data
+
+    def _spatial_state(self):
+        contact=self.spatial_contact
+        if contact and (not self.robot_model or contact.get('model_path')!=self.config.robot_model_path):
+            contact=None
+        errors=[r['error_mm'] for r in self.spatial_measurements] if contact else []
+        return dict(contact=contact, count=len(errors), measurements=self.spatial_measurements if contact else [],
+                    rms_mm=float(np.sqrt(np.mean(np.square(errors)))) if errors else None,
+                    max_mm=max(errors) if errors else None)
 
     def _emit_state(self) -> None:
         self._emit("state", self._state())
@@ -433,6 +474,15 @@ class Bridge:
                 display = frame.copy()
                 if self.board_found and self.board_corners is not None:
                     self.preview_board.draw(display, self.preview_detection)
+                    if self.spatial_overlay_enabled and self.preview_detection is not None:
+                        detected=self.preview_detection
+                        labels=detected.ids.ravel().tolist() if detected.ids is not None else list(range(len(detected.image_points)))
+                        highlight=self.spatial_contact['corner_id'] if self.spatial_contact else -1
+                        for corner,number in zip(detected.image_points.reshape(-1,2),labels):
+                            px,py=[int(round(v)) for v in corner]
+                            cv2.putText(display,str(number),(px+4,py-5),cv2.FONT_HERSHEY_SIMPLEX,
+                                .35,(0,210,255) if number!=highlight else (0,40,255),1,cv2.LINE_AA)
+                            if number==highlight:cv2.circle(display,(px,py),8,(0,40,255),2,cv2.LINE_AA)
                 if self.validation_overlay_enabled and self.board_found and self.board_corners is not None:
                     try:
                         ref = load_frozen(self._validation_paths()[0])
@@ -593,17 +643,21 @@ class Bridge:
 
     def _on_joints(self, joints: RosJoints) -> None:
         try:
-            pose_values = joints_to_pose(joints.values)
-            self.pose_history.add(pose_values, time.monotonic(), joints.timestamp, joints.values, "ros_joints")
-            self.latest_pose = RosPose(pose_values, joints.timestamp, joints.frame_id or self.config.robot_base_frame, self.config.robot_end_frame)
-            self.latest_pose_at = time.monotonic()
-            self.latest_robot_input = joints.values
-            self.latest_input_mode = "ros_joints"
-            self._emit("pose", {
-                "values": list(pose_values), "timestamp": joints.timestamp,
-                "frame_id": joints.frame_id or self.config.robot_base_frame, "child_frame_id": self.config.robot_end_frame, "input_mode": self.latest_input_mode,
-                "joint_names": list(joints.names), "joints": list(joints.values),
-            })
+            if not self.robot_model:
+                raise ValueError('JointState 模式需要导入真实的机械臂 URDF，禁止使用内置示例 DH 参数')
+            positions = dict(zip(joints.names,joints.values))
+            transform=self.robot_model.transform(self.config.robot_base_frame,self.config.robot_end_frame,positions)
+            pose_values=pose_from_matrix(transform)
+            current_time=time.monotonic()
+            self.pose_history.add(pose_values,current_time,joints.timestamp,joints.values,'ros_joints')
+            # JointState.header.frame_id is not the robot base frame
+            self.latest_pose=RosPose(pose_values,joints.timestamp,self.config.robot_base_frame,self.config.robot_end_frame)
+            self.latest_pose_at=current_time
+            self.latest_robot_input=joints.values
+            self.latest_input_mode='ros_joints'
+            self._emit('pose', {'values':list(pose_values),'timestamp':joints.timestamp,
+                                'frame_id':self.config.robot_base_frame,'child_frame_id':self.config.robot_end_frame,
+                                'input_mode':self.latest_input_mode,'joint_names':list(joints.names),'joints':list(joints.values)})
         except Exception as exc:
             self._on_ros_error(str(exc))
 
@@ -624,6 +678,8 @@ class Bridge:
         values = asdict(self.config)
         integer_fields = {"camera_index", "camera_width", "camera_height", "chessboard_cols", "chessboard_rows", "joint_dof", "charuco_squares_x", "charuco_squares_y", "charuco_min_corners"}
         for key, value in params.items():
+            if key == 'robot_model_path':
+                continue  # model updates require validation through import_robot_model
             if key not in values:
                 continue
             if key in integer_fields:
@@ -698,6 +754,243 @@ class Bridge:
             raise ValueError("棋盘更新只接受棋盘参数")
         return self._apply_config(params)
 
+    def _spatial_pose(self):
+        if not self.latest_pose or self.latest_pose_at is None or time.monotonic()-self.latest_pose_at>.5:
+            raise ValueError('机器人位姿未连接或超过 0.5 秒未更新，请先确认机械臂已停稳')
+        now=time.monotonic()
+        with self.pose_history.lock:
+            history=[e for e in self.pose_history.entries if now-.75<=e['received_at']<=now]
+        if len(history)<3 or history[-1]['received_at']-history[0]['received_at']<.3:
+            raise ValueError('请让机器人停稳至少 0.3 秒后再记录针尖接触')
+        p=np.asarray([e['pose'][:3] for e in history],dtype=float)
+        q=np.asarray([e['pose'][3:] for e in history],dtype=float)
+        q/=np.linalg.norm(q,axis=1)[:,None]
+        if np.max(np.linalg.norm(p-p[-1],axis=1))>.002 or np.max(np.rad2deg(2*np.arccos(np.clip(np.abs(q@q[-1]),0,1))))>1:
+            raise ValueError('当前机械臂未停稳，暂停移动后重试')
+        return history[-1]
+
+    def _spatial_base_tool(self, values):
+        from calibration_engine import make_transform, quaternion_to_matrix
+        return make_transform(quaternion_to_matrix(*values[3:]),values[:3])
+
+    @serialized
+    def resolve_tool_link(self, params):
+        if not self.robot_model:
+            raise ValueError('请先在机器人接口中导入包含工具 Link 的 URDF')
+        pose=self.latest_pose
+        if not pose or not self.latest_pose_at or time.monotonic()-self.latest_pose_at>.5:
+            raise ValueError('尚未收到新鲜的末端位姿')
+        target=str(params.get('link','')).strip()
+        if not target:
+            raise ValueError('请选择目标工具 Link')
+        fixed=self.robot_model.transform(pose.child_frame_id,target,only_fixed=True)
+        mat=self._spatial_base_tool(pose.values)@fixed
+        return dict(link=target,frame=pose.frame_id,source_link=pose.child_frame_id,
+                    position_m=mat[:3,3].tolist(),transform=mat.tolist(),stamp=pose.timestamp)
+
+    @serialized
+    def record_spatial_contact(self, params):
+        self._ensure_no_job()
+        from validation_engine import load_frozen
+        if not self.robot_model:
+            raise ValueError('请先导入真实的 URDF，确认针尖 Link 的原点与实际针尖重合')
+        fixed=load_frozen(self._validation_paths()[0])
+        if self.latest_pose is None:
+            raise ValueError('请先连接机械臂并等待位姿')
+        if (self.latest_pose.frame_id,self.latest_pose.child_frame_id)!=(fixed['robot_base_frame'],fixed['robot_end_frame']):
+            raise ValueError('当前机械臂的 Base / End Frame 与求解矩阵不匹配')
+        link=str(params.get('link','')).strip()
+        if not link:raise ValueError('请选择接触目标 Link')
+        index=int(params.get('corner_id',-1))
+        if fixed['board']!=self.config.board_config():
+            raise ValueError('标定板参数已变化，请恢复求解时使用的棋盘')
+        board=CalibrationBoard(self.config.board_config())
+        count=len(board.object_points)
+        if index<0 or index>=count:raise ValueError(f'标定板角点 ID 超出范围，应为 0 到 {count-1}')
+        transform=self.robot_model.transform(self.latest_pose.child_frame_id,link,only_fixed=True)
+        entry=self._spatial_pose()
+        world=self._spatial_base_tool(entry['pose'])@transform
+        reference=world[:3,3].tolist()
+        import hashlib
+        source_path=Path(self.config.robot_model_path)
+        model_digest=hashlib.sha256(source_path.read_bytes()).hexdigest()
+        frozen_path=self._validation_paths()[0]
+        solution_digest=hashlib.sha256(frozen_path.read_bytes()).hexdigest()
+        record=dict(base_frame=fixed['robot_base_frame'],end_frame=fixed['robot_end_frame'],
+                    camera_frame=fixed['camera_frame'],link=link,corner_id=index,
+                    point_m=reference,source_pose_stamp=entry['robot_timestamp'],
+                    model_path=str(source_path),model_sha256=model_digest,
+                    frozen_sha256=solution_digest,created_at=time.time(),
+                    reference_type='robot_fk_tool_contact',units='m')
+        self.spatial_contact=record
+        self.spatial_measurements=[]
+        out,_,_=self._paths()
+        (out/'spatial_contact.yaml').write_text(yaml.safe_dump(record,sort_keys=False,allow_unicode=True),encoding='utf-8')
+        (out/'spatial_validation_report.yaml').unlink(missing_ok=True)
+        self._emit_state()
+        return record
+
+    @serialized
+    def measure_spatial_target(self, _params):
+        self._ensure_no_job()
+        from calibration_engine import load_intrinsics, make_transform
+        from calibration_board import solve_board_pose
+        from validation_engine import load_frozen, valid_transform
+        from hashlib import sha256
+        ref=self.spatial_contact
+        if not ref:
+            raise ValueError('请先用针尖接触已知角点，记录参考点')
+        if sha256(Path(ref['model_path']).read_bytes()).hexdigest()!=ref['model_sha256']:
+            raise ValueError('URDF 已变化，请重新建立针尖参考')
+        frozen_path=self._validation_paths()[0]
+        if sha256(frozen_path.read_bytes()).hexdigest()!=ref['frozen_sha256']:
+            raise ValueError('手眼矩阵已变化，请重新建立针尖参考')
+        frozen=load_frozen(frozen_path)
+        if (ref['base_frame'],ref['end_frame'],ref['camera_frame']) != (
+                frozen['robot_base_frame'], frozen['robot_end_frame'], frozen['camera_frame']):
+            raise ValueError('参考点坐标系与已冻结结果不一致')
+        with self.frame_lock:
+            frame=self.current_frame.copy() if self.current_frame is not None else None
+            receipt=self.frame_received_at
+            frame_stamp=self.frame_ros_stamp
+            image_frame=self.frame_id
+        if frame is None or receipt is None or time.monotonic()-receipt>.5:
+            raise ValueError('相机帧已过期，请等待实时画面')
+        if image_frame!=ref['camera_frame']:
+            raise ValueError('RGB 图像光学 Frame 与求解矩阵不一致')
+        entry,dt=self.pose_history.match(receipt,time.monotonic())
+        if frame_stamp is not None and entry['robot_timestamp'] is not None:
+            d=abs(float(frame_stamp)-float(entry['robot_timestamp']))
+            if d<1 and d>.1:
+                raise ValueError('图像与末端位姿时间戳差过大')
+        robot=self._spatial_base_tool(entry['pose'])
+        _,intrinsics,_=self._paths()
+        k,d,metadata=load_intrinsics(intrinsics)
+        from validation_engine import _intrinsics
+        expected_k,expected_d,expected_size=_intrinsics(frozen)
+        if frame.shape[1::-1] != tuple(expected_size) or not np.allclose(k,expected_k,atol=1e-8,rtol=0) or not np.allclose(d,expected_d,atol=1e-8,rtol=0):
+            raise ValueError('当前相机分辨率或内参与求解时不同，请恢复原相机配置')
+        detector=CalibrationBoard(self.config.board_config())
+        observation=detector.detect(cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY),k,d)
+        target_to_camera,error=solve_board_pose(observation.object_points,observation.image_points,k,d)
+        ids=observation.ids.ravel().astype(int).tolist() if observation.ids is not None else list(range(len(observation.object_points)))
+        if ref['corner_id'] not in ids:
+            raise ValueError(f'当前图像未识别到参考角点 ID {ref["corner_id"]}，请换一个视角')
+        selected=ids.index(ref['corner_id'])
+        point_board=np.r_[observation.object_points[selected],1.]
+        handeye=valid_transform(frozen['handeye_transform'],'handeye_transform')
+        predicted=robot@handeye@target_to_camera@point_board
+        diff=predicted[:3]-np.asarray(ref['point_m'],dtype=float)
+        row=dict(id=len(self.spatial_measurements)+1,corner_id=ref['corner_id'],
+                 vision_point_m=predicted[:3].tolist(),reference_point_m=ref['point_m'],
+                 error_xyz_mm=(diff*1000).tolist(),error_mm=float(np.linalg.norm(diff)*1000),
+                 board_pnp_reprojection_px=float(error),pose_image_dt_ms=float(dt),
+                 robot_pose_stamp=entry['robot_timestamp'],image_stamp=frame_stamp,
+                 acquired_at=time.time())
+        self.spatial_measurements.append(row)
+        errors=[item['error_mm'] for item in self.spatial_measurements]
+        out,_,_=self._paths()
+        payload=dict(reference=ref,measurement_method='known_board_corner_PnP',
+            note='机器人 FK 针尖接触作为参考，不是独立计量真值；报告包含模型/TCP/相机/手眼/接触误差',
+            count=len(errors),rms_mm=float(np.sqrt(np.mean(np.square(errors)))),
+            p95_mm=float(np.percentile(errors,95)),max_mm=float(max(errors)),
+            samples=self.spatial_measurements)
+        (out/'spatial_validation_report.yaml').write_text(
+            yaml.safe_dump(payload,sort_keys=False,allow_unicode=True),encoding='utf-8')
+        self._emit_state()
+        return row
+
+    @serialized
+    def clear_spatial(self, _params):
+        self.spatial_contact=None
+        self.spatial_measurements=[]
+        self._emit_state()
+        return {'ok':True}
+
+    @serialized
+    def import_robot_model(self, params: dict[str, Any]):
+        self._ensure_no_job()
+        if self.ros.running:
+            raise ValueError('更换机器人模型前请断开机械臂连接')
+        if self.handeye.samples and self.config.ros_input_type=='joints':
+            raise ValueError('当前用 JointState 正运动学采集了样本，更换 URDF 前需先备份并清空样本')
+        path=str(params.get('path','')).strip()
+        model=RobotModel.from_file(path)
+        # Read/expand once and keep an immutable local model snapshot
+        destination=self.data_dir/'robot_model.urdf'
+        if Path(path).suffix.lower()=='.xacro':
+            import subprocess
+            content=subprocess.run(['xacro',str(Path(path).resolve())],capture_output=True,text=True,
+                timeout=12,check=True,cwd=str(Path(path).resolve().parent)).stdout
+        else:
+            content=Path(path).expanduser().resolve().read_text(encoding='utf-8')
+        model=RobotModel(content)
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=self.data_dir,
+                prefix='.robot_model-',suffix='.urdf',delete=False) as handle:
+            handle.write(content)
+            temp=Path(handle.name)
+        temp.replace(destination)
+        self.robot_model=model
+        self.robot_model_error=''
+        self.config.robot_model_path=str(destination)
+        self.config.save(self.config_path)
+        self.spatial_contact=None
+        self.spatial_measurements=[]
+        self._emit_state()
+        return self._model_state()
+
+    @serialized
+    def import_ros_model(self, _params):
+        if self.ros.running or (self.handeye.samples and self.config.ros_input_type=='joints'):
+            raise ValueError('请断开机械臂连接；JointState 模式已有采样数据时还需备份并清空样本')
+        try:
+            import rclpy
+            from rclpy.node import Node
+            from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
+            from std_msgs.msg import String
+        except ImportError as exc:
+            raise ValueError('未加载 ROS2 Python 环境，无法读取 /robot_description') from exc
+        created=not rclpy.ok()
+        if created:rclpy.init(args=None)
+        node=rclpy.create_node('handeye_robot_description_reader')
+        values=[]
+        try:
+            qos=QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                           reliability=ReliabilityPolicy.RELIABLE)
+            node.create_subscription(String,'/robot_description',lambda msg:values.append(msg.data),qos)
+            start=time.monotonic()
+            while not values and time.monotonic()-start<3.0:
+                rclpy.spin_once(node,timeout_sec=0.15)
+        finally:
+            node.destroy_node()
+            if created:rclpy.shutdown()
+        if not values:
+            raise ValueError('3 秒内未收到 /robot_description，请先启动 robot_state_publisher 或改为导入 URDF 文件')
+        # Reuse the exact same validated file-import path
+        with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',suffix='.urdf',
+                prefix='handeye-model-',delete=False) as handle:
+            handle.write(values[-1]);temporary=Path(handle.name)
+        try:
+            return self.import_robot_model({'path':str(temporary)})
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @serialized
+    def clear_robot_model(self, _params):
+        if self.ros.running:
+            raise ValueError('移除模型前请先断开机械臂')
+        if self.config.ros_input_type=='joints':
+            raise ValueError('JointState 模式必须保留 URDF，请先切换位姿输入类型')
+        self.robot_model=None
+        self.robot_model_error=''
+        self.config.robot_model_path=''
+        self.config.save(self.config_path)
+        self.spatial_contact=None
+        self.spatial_measurements=[]
+        self._emit_state()
+        return self._model_state()
+
     @serialized
     def connect_robot(self, _params: dict[str, Any]) -> dict[str, Any]:
         """Connect the selected pose source and camera together, with rollback"""
@@ -715,6 +1008,11 @@ class Bridge:
             raise ValueError("PoseStamped 不携带末端 Frame，请填写末端 Frame")
         if c.ros_input_type in ("tf", "joints") and (not c.robot_base_frame or not c.robot_end_frame):
             raise ValueError("请填写基座 Frame 与末端 Frame")
+        if c.ros_input_type == 'joints':
+            if not self.robot_model:
+                raise ValueError('JointState 模式必须先导入有效的 URDF 模型')
+            self.robot_model.transform(c.robot_base_frame,c.robot_end_frame,{
+                name:0.0 for name in self.robot_model.joints})
         if c.camera_source == "ros" and c.camera_frame and c.camera_info_topic and self.camera_info:
             known = self.camera_info.get("frame_id", "")
             if known and known != c.camera_frame:
@@ -888,7 +1186,13 @@ class Bridge:
             return (x, y, z, *q), values, "pose_rpy"
         if kind == "joints":
             joints = tuple(v * scale for v in values)
-            return joints_to_pose(joints), joints, "joints"
+            if not self.robot_model:
+                raise ValueError('关节角手动输入必须先导入真实 URDF')
+            names=[x.strip() for x in self.config.joint_names.split(',') if x.strip()]
+            if not names or len(names)!=len(joints):
+                raise ValueError('手动关节角输入须按 URDF 关节名称配置映射，数量必须一致')
+            transform=self.robot_model.transform(self.config.robot_base_frame,self.config.robot_end_frame,dict(zip(names,joints)))
+            return pose_from_matrix(transform), joints, 'joints' 
         raise ValueError(f"未知手动输入模式: {kind}")
 
     @serialized
@@ -1197,7 +1501,8 @@ class Bridge:
     @serialized
     def set_validation_overlay(self, params: dict[str, Any]) -> dict[str, Any]:
         self.validation_overlay_enabled = bool(params.get('enabled',False))
-        return {'enabled': self.validation_overlay_enabled}
+        self.spatial_overlay_enabled = bool(params.get('spatial',False))
+        return {'enabled': self.validation_overlay_enabled,'spatial':self.spatial_overlay_enabled}
 
     @serialized
     def capture_validation(self, _params: dict[str, Any]) -> dict[str, Any]:
@@ -1516,6 +1821,20 @@ class Bridge:
             if kind not in graph.get(topic, []):
                 raise ValueError("选择的话题不存在或类型不匹配，请重新搜索")
             return inspect_ros_topic(topic, kind)
+        if method == 'import_robot_model':
+            return self.import_robot_model(params)
+        if method == 'import_ros_model':
+            return self.import_ros_model(params)
+        if method == 'clear_robot_model':
+            return self.clear_robot_model(params)
+        if method == 'resolve_tool_link':
+            return self.resolve_tool_link(params)
+        if method == 'record_spatial_contact':
+            return self.record_spatial_contact(params)
+        if method == 'measure_spatial_target':
+            return self.measure_spatial_target(params)
+        if method == 'clear_spatial':
+            return self.clear_spatial(params)
         if method == "connect_robot":
             return self.connect_robot(params)
         if method == "disconnect_robot":

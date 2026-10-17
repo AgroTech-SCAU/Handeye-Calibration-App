@@ -50,6 +50,10 @@
         "to": "handeye/ros_interface.py"
       },
       {
+        "from": "robot_model.py",
+        "to": "handeye/robot_model.py"
+      },
+      {
         "from": "requirements.txt",
         "to": "handeye/requirements.txt"
       },

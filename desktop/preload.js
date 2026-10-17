@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('handeye', {
   selectDirectory: initial => ipcRenderer.invoke('handeye:select-directory', initial),
   selectIntrinsics: () => ipcRenderer.invoke('handeye:select-intrinsics'),
   selectSamples: initial => ipcRenderer.invoke('handeye:select-samples', initial),
+  selectRobotModel: () => ipcRenderer.invoke('handeye:select-robot-model'),
   runtimeInfo: () => ipcRenderer.invoke('handeye:runtime-info'),
   runtimeInstall: () => ipcRenderer.invoke('handeye:runtime-install'),
   backendRestart: () => ipcRenderer.invoke('handeye:backend-restart'),

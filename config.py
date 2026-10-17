@@ -45,6 +45,7 @@ class AppConfig:
     pose_topic: str = ""
     joint_dof: int = 5
     joint_names: str = ""
+    robot_model_path: str = ""
     capture_topic: str = "/handeye/capture"
     status_topic: str = "/handeye/status"
 

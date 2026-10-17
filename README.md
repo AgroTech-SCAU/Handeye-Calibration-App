@@ -5,7 +5,7 @@
 ## 功能
 
 - ROS2 机器人位姿输入支持 `PoseStamped`、`TransformStamped`、TF2
-- 兼容需要显式运动学模型的 `JointState` 输入和手动位姿输入
+- 支持 `JointState + URDF` 正运动学和手动位姿输入，不再使用内置示例机械臂参数
 - 相机支持 ROS2 `Image`、`CameraInfo` 以及本地 V4L2 设备
 - 支持 Chessboard、CharUco、相机内参标定和内参文件导入
 - 保留 OpenCV、Robust、Bundle Adjustment 三种手眼求解方式
@@ -116,3 +116,17 @@ Tomato-Manipulation 的手眼标定节点可发布 `/arm/tool_transform`，输�
 验证参考来自训练数据而非独立测量真值，因此报告只评价手眼几何一致性与投影一致性，不可直接解释为绝对空间定位精度
 
 修改训练样本、求解结果或棋盘参数后，旧冻结参考与验证报告会自动失效
+
+## 机械臂模型与空间定位
+
+机械臂输入可以选择 `TransformStamped`、`PoseStamped`、TF2 或 `JointState + URDF`，前三种直接提供末端位姿，导入 URDF 后可在应用内部推导与末端通过固定关节连接的 `tip` 等工具 Link
+
+`JointState` 必须先导入真实的 URDF，使用关节名称匹配及 URDF 正运动学，不使用自带演示用的机械臂参数，导入 URDF 不会发布 `/tf`
+
+机器人接口可以选择 URDF / Xacro 文件，或读取 ROS2 `/robot_description`，导入前请断开机械臂连接，模型副本保存在应用的运行数据目录
+
+验证页面依次提供「离线验证 — 独立样本几何一致性」「真机验证 — 几何一致性」「真机验证 — 手眼伺服定位」
+
+手眼伺服定位目前提供人工触点对照：选择工具 Link 和标定板角点 ID，手动接触停稳后记录基座参考位置，移开机械臂后用 RGB + 棋盘 PnP 重新测量同一角点，结果保存在输出目录 `spatial_contact.yaml` 和 `spatial_validation_report.yaml`
+
+人工触点参考依赖机器人正运动学及工具安装精度，不等于第三方独立真值，自动 RGB-D 闭环伺服仅在界面说明接口要求，尚未启用机器人运动控制

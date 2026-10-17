@@ -138,17 +138,14 @@ class RosInterface:
                     selected_names = joint_names
                     selected_values = tuple(value_by_name[name] for name in joint_names)
                 else:
-                    if len(available_values) < joint_dof:
-                        raise ValueError(
-                            f"JointState.position 只有 {len(available_values)} 个值，"
-                            f"界面配置为 {joint_dof} 自由度"
-                        )
-                    selected_values = available_values[:joint_dof]
-                    selected_names = (
-                        available_names[:joint_dof]
-                        if len(available_names) >= joint_dof
-                        else tuple(f"q{i + 1}" for i in range(joint_dof))
-                    )
+                    # Preserve the complete name-to-position mapping.  Never
+                    # infer URDF joint identity from array position or DOF.
+                    if not available_names or len(available_names) != len(available_values):
+                        raise ValueError('JointState 必须提供完整且与 position 对应的关节名称')
+                    if len(set(available_names)) != len(available_names):
+                        raise ValueError('JointState 存在重复的关节名称')
+                    selected_names = available_names
+                    selected_values = available_values
                 stamp = message.header.stamp
                 timestamp = float(stamp.sec) + float(stamp.nanosec) * 1e-9
                 self._on_joints(
