@@ -156,7 +156,11 @@ class Bridge:
             self.config.robot_base_frame = self.config.robot_base_frame or "arm_base_link"
             self.config.robot_end_frame = self.config.robot_end_frame or "demo_tool"
             self.config.camera_frame = self.config.camera_frame or "demo_camera_optical_frame"
-        if not self.config.output_dir or self.config.output_dir.startswith(str(ROOT)):
+        # Keep explicit output directories across restarts, even inside the source tree
+        # Redirect only the untouched first-run default to user data
+        if not self.config.output_dir or (
+            first_run and Path(self.config.output_dir).expanduser().resolve() == (ROOT / "output").resolve()
+        ):
             self.config.output_dir = str((data_dir / "output").resolve())
         Path(self.config.output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -760,6 +764,11 @@ class Bridge:
         acquisition = {"output_dir", "camera_source", "image_topic", "camera_info_topic", "camera_frame", "robot_base_frame", "robot_end_frame", "camera_index", "camera_width", "camera_height", "chessboard_cols", "chessboard_rows", "square_size_mm", "board_type", "ros_input_type", "pose_topic", "joint_dof", "joint_names"} | {k for k in values if k.startswith("charuco_")}
         if changed & acquisition and (self.intrinsic.image_sets or self.handeye.samples):
             if not (board_only and board_changed and reset_captures):
+                if 'output_dir' in changed:
+                    raise ValueError(
+                        '当前会话已经采集了样本，无法直接切换输出目录，以免样本和标定结果分散，'
+                        '请先保存并备份当前目录中的标定成果；结束并清空当前采集会话后再切换目录'
+                    )
                 raise ValueError("已有采集数据，更新棋盘前需确认清空采集，不必断开机器人")
         camera_fields = {"camera_source", "image_topic", "camera_info_topic", "camera_index", "camera_width", "camera_height"}
         if self.camera_open and changed & camera_fields:

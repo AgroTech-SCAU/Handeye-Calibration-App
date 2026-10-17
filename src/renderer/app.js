@@ -334,7 +334,7 @@ function renderConnect(){
   <div class="grid three" style="margin-bottom:14px">
     <div class="metric"><div class="metric-label">${t('connect.metricCamera')}</div><div class="metric-value" id="connect-camera-state" style="color:${cam.receiving?'var(--success)':'var(--text-secondary)'}">${cam.receiving?t('status.connected'):cam.open?t('status.waiting'):t('status.offline')}</div><div class="metric-meta">${escapeHtml(isRos?c.image_topic:t('connect.device',{index:c.camera_index,width:c.camera_width,height:c.camera_height}))}</div></div>
     <div class="metric"><div class="metric-label">${t('connect.metricRobot')}</div><div class="metric-value" id="connect-robot-state" style="color:${ros.pose?'var(--success)':'var(--text-secondary)'}">${ros.pose?t('status.receiving'):ros.running?t('status.waiting'):t('status.offline')}</div><div class="metric-meta">${escapeHtml(kind==='tf'?(c.robot_base_frame+' → '+c.robot_end_frame):c.pose_topic)}</div></div>
-    <div class="metric"><div class="metric-label">${t('connect.metricOutput')}</div><div class="metric-value">${state.data.handeye?.count||0}<small>${t('connect.samples')}</small></div><div class="metric-meta">${escapeHtml(c.output_dir||t('connect.notConfigured'))}</div></div>
+    <div class="metric"><div class="metric-label">${t('connect.metricOutput')}</div><div class="metric-value">${state.data.handeye?.count||0}<small>${t('connect.samples')}</small></div><div class="metric-meta" id="connect-output-meta">${escapeHtml(c.output_dir||t('connect.notConfigured'))}</div></div>
   </div>
   <div class="grid preview-layout">${preview()}<div class="stack">
     ${card(t('connect.projectSettings'),t('connect.projectSettingsDesc'),'folder',`<div class="field"><label for="output-dir">${t('field.outputDir')}</label><div class="inline-control"><input class="control" id="output-dir" value="${escapeHtml(c.output_dir)}"/><button class="btn" id="browse-output">${icon('folder')}${t('action.browse')}</button></div></div>`)}
@@ -551,6 +551,38 @@ function renderPage(animate=false){
   $('#page').innerHTML=html
   if(animate)animateCurrentPage()
   bindPage(); updateShell()
+}
+
+async function commitOutputDirectory(selected){
+  const previous=state.data.config?.output_dir||''
+  const proposed=String(selected??'').trim()
+  const input=$('#output-dir')
+  if(!proposed){
+    if(input)input.value=previous
+    toast(t('toast.operationFailed'),t('connect.needOutput'),'warning')
+    return false
+  }
+  if(proposed===previous){
+    if(input)input.value=previous
+    return true
+  }
+  try{
+    // Persist only the output path and leave other unsaved connection settings intact
+    const saved=await request('set_config',{output_dir:proposed})
+    state.data=saved
+    const path=saved.config.output_dir
+    const currentInput=$('#output-dir')
+    if(currentInput)currentInput.value=path
+    const meta=$('#connect-output-meta')
+    if(meta)meta.textContent=path
+    toast(t('toast.settingsSaved'),path,'success')
+    return true
+  }catch(_error){
+    // Revert to the active directory after a backend rejection
+    const currentInput=$('#output-dir')
+    if(currentInput)currentInput.value=previous
+    return false
+  }
 }
 
 function configFromForm(scope='connect'){
@@ -976,7 +1008,14 @@ function bindPage(){
     if(!window.confirm(t('guide.confirmClear')))return
     await request('clear_robot_model',{},t('guide.clearModel'));await refreshState()
   })
-  $('#browse-output')?.addEventListener('click',async()=>{const p=await api?.selectDirectory($('#output-dir').value);if(p)$('#output-dir').value=p})
+  $('#browse-output')?.addEventListener('click',async()=>{
+    try{
+      const p=await api?.selectDirectory($('#output-dir')?.value||state.data.config?.output_dir||'')
+      if(p)await commitOutputDirectory(p)
+    }catch(error){toast(t('toast.operationFailed'),error.message||String(error),'danger')}
+  })
+  // Persist manually typed paths before the next state refresh
+  $('#output-dir')?.addEventListener('change',async event=>{await commitOutputDirectory(event.target.value)})
   $('#connect-robot')?.addEventListener('click',async()=>{
     const config=configFromForm('connect')
     const error=validateConnection(config)
