@@ -522,3 +522,10 @@ textarea.control { height:auto; min-height:82px; padding-top:10px; resize:vertic
 .servo-selection-box {position:absolute;z-index:6;border:2px solid #f59e0b;background:rgba(245,158,11,.13);pointer-events:none;border-radius:3px;}
 
 .servo-target-marker {position:absolute;z-index:7;transform:translate(-50%,-50%);width:24px;height:24px;border:2px solid #f59e0b;border-radius:50%;background:rgba(245,158,11,.12);color:#fff;text-shadow:0 0 3px #000;display:grid;place-items:center;pointer-events:none;font-size:17px;font-weight:800;}
+
+/* Project switching requires a deliberate confirmation before changing active data */
+.project-force-confirm { display:flex; gap:10px; align-items:center; margin-top:12px; font-size:13px; color:var(--text-primary); cursor:pointer; }
+.project-force-confirm input { width:16px; height:16px; accent-color:var(--accent); flex:none; }
+.project-force-confirm + .help { margin:7px 0 12px; }
+#force-switch-project:disabled { opacity:.45; cursor:not-allowed; }
+#spatial-camera-diagnostics { white-space:pre-wrap; overflow-wrap:anywhere; margin-top:12px; font-size:12.5px; line-height:1.55; }

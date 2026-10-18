@@ -296,3 +296,47 @@ class CharucoBridgeTests(BridgeIntegrationTests):
         self.assertEqual(self.bridge.request('get_state')['result']['handeye']['count'],1)
         self.bridge.request('stop_ros')
         self.assertFalse(self.bridge.request('start_ros',dict(input_topic='/different/pose'))['ok'])
+
+class ProjectSwitchRegressionTests(BridgeIntegrationTests):
+    def test_force_switch_saves_unsolved_handeye_samples_in_original_directory(self):
+        original = Path(self.bridge.request('get_state')['result']['config']['output_dir'])
+        other = Path(self.bridge.temp.name) / 'another_project'
+        self.bridge.request('open_camera')
+        self.bridge.read_until(lambda msg: msg.get('event') == 'preview', timeout=10)
+        (original / 'camera_intrinsics.yaml').write_text(yaml.safe_dump(dict(
+            camera_matrix=dict(data=[600.,0.,320.,0.,600.,240.,0.,0.,1.]),
+            distortion_coefficients=dict(data=[0.]*5), image_width=640, image_height=480)))
+        captured = self.bridge.request('capture_handeye',dict(mode='manual',manual_type='quaternion',
+            values=[0,0,0,0,0,0,1],quality_mode='minimal'))
+        self.assertTrue(captured['ok'],captured)
+        self.assertFalse(self.bridge.request('switch_project',dict(output_dir=str(other)))['ok'])
+        result = self.bridge.request('switch_project',dict(output_dir=str(other),force_switch=True))
+        self.assertTrue(result['ok'],result)
+        self.assertEqual(result['result']['handeye']['count'],0)
+        self.assertTrue((original/'samples.yaml').exists())
+        self.assertFalse((other/'samples.yaml').exists())
+        back = self.bridge.request('switch_project',dict(output_dir=str(original)))
+        self.assertTrue(back['ok'],back)
+        self.assertEqual(back['result']['handeye']['count'],1)
+        self.assertFalse((original/'samples_result.yaml').exists())
+
+    def test_force_switch_retains_unfinished_intrinsics_and_project_board(self):
+        original = Path(self.bridge.request('get_state')['result']['config']['output_dir'])
+        other = Path(self.bridge.temp.name) / 'another_project'
+        changed = self.bridge.request('update_board',dict(board_type='charuco',square_size_mm=20.,
+            charuco_squares_x=14,charuco_squares_y=9,charuco_marker_size_mm=15.,
+            charuco_dictionary='DICT_5X5_100',charuco_min_corners=6))
+        self.assertTrue(changed['ok'],changed)
+        self.bridge.request('open_camera')
+        self.bridge.read_until(lambda msg: msg.get('event')=='preview',timeout=10)
+        sampled = self.bridge.request('capture_intrinsic',dict(quality_mode='minimal'))
+        self.assertTrue(sampled['ok'],sampled)
+        moved = self.bridge.request('switch_project',dict(output_dir=str(other),force_switch=True))
+        self.assertTrue(moved['ok'],moved)
+        self.assertTrue((original/'.handeye_intrinsic_captures.npz').exists())
+        changed = self.bridge.request('update_board',dict(board_type='chessboard',square_size_mm=15.))
+        self.assertTrue(changed['ok'],changed)
+        back = self.bridge.request('switch_project',dict(output_dir=str(original)))
+        self.assertTrue(back['ok'],back)
+        self.assertEqual(back['result']['intrinsics']['count'],1)
+        self.assertEqual(back['result']['config']['board_type'],'charuco')

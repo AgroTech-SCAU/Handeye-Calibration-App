@@ -205,8 +205,182 @@ class Bridge:
         )
         self.ros_camera = RosCameraInterface(self._on_image, self._on_camera_info, self._on_ros_error)
         self.ros_depth = RosDepthInterface(self._on_depth, self._on_ros_error)
+        self._restore_project_session()
         self._restore_validation_session()
         self._camera_thread.start()
+
+    def _intrinsic_capture_path(self, directory: Path | None = None) -> Path:
+        base = Path(directory) if directory is not None else self._paths()[0]
+        return base / ".handeye_intrinsic_captures.npz"
+
+    def _persist_intrinsic_captures(self) -> None:
+        """Save unfinished intrinsics without solving and without pickle data."""
+        path = self._intrinsic_capture_path()
+        if not self.intrinsic.image_sets:
+            path.unlink(missing_ok=True)
+            return
+        count = len(self.intrinsic.image_sets)
+        if count != len(self.intrinsic.object_sets):
+            raise ValueError("内参图片采集记录不完整，已取消项目切换")
+        meta = dict(count=count, board=self.intrinsic.board_spec,
+                    image_size=self.intrinsic.image_size, quality_mode=self.intrinsic.quality_mode)
+        arrays = {"metadata": np.frombuffer(json.dumps(meta, ensure_ascii=False).encode("utf-8"), dtype=np.uint8)}
+        for i, (obj, img) in enumerate(zip(self.intrinsic.object_sets, self.intrinsic.image_sets)):
+            arrays[f"object_{i}"] = np.asarray(obj)
+            arrays[f"image_{i}"] = np.asarray(img)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + ".pending")
+        try:
+            with temporary.open("wb") as stream:
+                np.savez_compressed(stream, **arrays)
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _load_intrinsic_captures(self, directory: Path) -> IntrinsicCalibration:
+        session = IntrinsicCalibration()
+        path = self._intrinsic_capture_path(directory)
+        if not path.is_file():
+            return session
+        with np.load(path, allow_pickle=False) as stored:
+            meta = json.loads(stored["metadata"].tobytes().decode("utf-8"))
+            count = int(meta["count"])
+            if not 0 <= count <= 10000:
+                raise ValueError("目标项目内参采样数量无效")
+            session.board_spec = meta["board"]
+            session.image_size = tuple(meta["image_size"])
+            session.quality_mode = meta["quality_mode"]
+            for i in range(count):
+                session.object_sets.append(np.array(stored[f"object_{i}"], copy=True))
+                session.image_sets.append(np.array(stored[f"image_{i}"], copy=True))
+        return session
+
+    @staticmethod
+    def _project_board_settings(directory: Path) -> dict[str, Any] | None:
+        """Read project-local board geometry before restoring its session."""
+        board = None
+        samples_file = directory / "samples.yaml"
+        if samples_file.is_file():
+            doc = yaml.safe_load(samples_file.read_text(encoding="utf-8")) or {}
+            board = doc.get("board")
+        snapshot_file = directory / ".handeye_intrinsic_captures.npz"
+        if board is None and snapshot_file.is_file():
+            with np.load(snapshot_file, allow_pickle=False) as archive:
+                meta = json.loads(archive["metadata"].tobytes().decode("utf-8"))
+                board = meta.get("board")
+        if not board:
+            return None
+        CalibrationBoard(board)
+        if board["type"] == "chessboard":
+            return dict(board_type="chessboard", chessboard_cols=int(board["cols"]),
+                        chessboard_rows=int(board["rows"]), square_size_mm=float(board["square_size_mm"]))
+        return dict(board_type="charuco", charuco_squares_x=int(board["squares_x"]),
+                    charuco_squares_y=int(board["squares_y"]), square_size_mm=float(board["square_size_mm"]),
+                    charuco_marker_size_mm=float(board["marker_size_mm"]), charuco_dictionary=str(board["dictionary"]),
+                    charuco_min_corners=int(board["min_corners"]), charuco_legacy_pattern=bool(board["legacy_pattern"]))
+
+    def _read_project_session(self, directory: Path, config: AppConfig):
+        """Validate the destination before changing the current project."""
+        from calibration_engine import load_intrinsics, intrinsic_binding
+        intrinsic = self._load_intrinsic_captures(directory)
+        samples_file = directory / "samples.yaml"
+        handeye = HandEyeCollection()
+        frames = None
+        if samples_file.is_file():
+            data = yaml.safe_load(samples_file.read_text(encoding="utf-8")) or {}
+            samples = data.get("samples") or []
+            if samples:
+                if data.get("board") != config.board_config():
+                    raise ValueError("目标项目的标定板参数与当前配置不同，请先设置相同的标定板参数，再切换项目")
+                _, _, intr_data = load_intrinsics(directory / "camera_intrinsics.yaml")
+                binding = intrinsic_binding(intr_data)
+                frozen_size = data.get("image_size_at_collection")
+                if (frozen_size != binding["image_size"] or
+                        not np.allclose(data["camera_matrix_at_collection"]["data"], binding["camera_matrix"], atol=1e-9, rtol=0) or
+                        not np.allclose(data["distortion_at_collection"]["data"], binding["distortion"], atol=1e-9, rtol=0)):
+                    raise ValueError("目标项目样本与其内参文件不一致，未切换项目")
+                handeye.samples = samples
+                handeye.quality_mode = data.get("collection_quality_mode") or samples[0].get("quality_mode", "standard")
+                handeye.board_spec = data["board"]
+                handeye.binding = binding
+                handeye.intrinsics_snapshot = intr_data
+                frames = (data.get("robot_base_frame"), data.get("robot_end_frame"), data.get("camera_frame"))
+                if not all(frames):
+                    raise ValueError("目标项目的样本缺少坐标系，未切换项目")
+        if intrinsic.image_sets and intrinsic.board_spec != config.board_config():
+            raise ValueError("目标项目未完成的内参采样使用了不同的标定板，请先匹配标定板设置")
+        return intrinsic, handeye, frames
+
+    def _restore_project_session(self) -> None:
+        try:
+            intrinsic, handeye, frames = self._read_project_session(self._paths()[0], self.config)
+        except Exception as exc:
+            self.last_error = f"当前项目保存的数据未能恢复：{exc}"
+            return
+        self.intrinsic = intrinsic
+        self.handeye = handeye
+        self.source_frames = frames
+        self.samples_dirty = False
+
+    @serialized
+    def switch_project(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Explicit project switching, never implicitly starting a solver."""
+        if set(params) - {"output_dir", "force_switch"}:
+            raise ValueError("切换项目只接受输出目录与强制切换确认")
+        return self._apply_config(params)
+
+    def _spatial_camera_diagnostics(self) -> dict[str, Any]:
+        """Report which camera contract differs instead of one ambiguous error."""
+        from calibration_engine import load_intrinsics
+        from validation_engine import load_frozen, _intrinsics
+        reference, _, _ = self._validation_paths()
+        if not reference.is_file():
+            raise ValueError("请先冻结手眼求解结果，再检查针尖测量相机配置")
+        frozen = load_frozen(reference)
+        _, path, _ = self._paths()
+        if not path.is_file():
+            raise ValueError(f"当前项目缺少相机内参文件：{path}")
+        k, d, file_metadata = load_intrinsics(path)
+        fixed_k, fixed_d, fixed_size = _intrinsics(frozen)
+        with self.frame_lock:
+            frame = self.current_frame
+            current_frame = self.frame_id
+            current_size = [int(frame.shape[1]), int(frame.shape[0])] if frame is not None else None
+        info = self.camera_info
+        file_size = [int(file_metadata.get("image_width", 0)), int(file_metadata.get("image_height", 0))]
+        camera_info_size = ([int(info["image_width"]), int(info["image_height"])] if info else None)
+        def equal_array(a, b):
+            return np.asarray(a).shape == np.asarray(b).shape and bool(np.allclose(a,b,atol=1e-8,rtol=0))
+        problems = []
+        if current_size is None:
+            problems.append("未收到实时 RGB 图像，请检查当前相机来源和 Image 话题")
+        elif current_size != fixed_size:
+            problems.append(f"实时 RGB 图像尺寸 {current_size[0]}×{current_size[1]}，冻结结果要求 {fixed_size[0]}×{fixed_size[1]}")
+        if file_size != fixed_size:
+            problems.append(f"内参文件尺寸 {file_size[0]}×{file_size[1]}，冻结结果要求 {fixed_size[0]}×{fixed_size[1]}")
+        if not equal_array(k, fixed_k):
+            problems.append(f"当前内参文件的 K 矩阵不同，最大差值 {float(np.max(np.abs(k-fixed_k))):.8g}")
+        if not equal_array(d.reshape(-1), fixed_d.reshape(-1)):
+            problems.append("当前内参文件的畸变参数 D 与冻结结果不同")
+        if camera_info_size and current_size and camera_info_size != current_size:
+            problems.append(f"ROS CameraInfo 尺寸 {camera_info_size[0]}×{camera_info_size[1]} 与实时 RGB 图像不一致")
+        if current_frame and current_frame != frozen["camera_frame"]:
+            problems.append(f"RGB 光学 Frame {current_frame} 与冻结结果 {frozen['camera_frame']} 不同")
+        if info and current_frame and info.get("frame_id") and info["frame_id"] != current_frame:
+            problems.append(f"CameraInfo 光学 Frame {info['frame_id']} 与 RGB Image 不同")
+        return dict(ok=not problems, problems=problems, image_size=current_size,
+                    frozen_size=fixed_size, file_size=file_size,
+                    camera_info_size=camera_info_size, image_frame=current_frame,
+                    camera_info_frame=info.get("frame_id") if info else None,
+                    image_topic=self.config.image_topic if self.config.camera_source == "ros" else f"V4L2 camera {self.config.camera_index}",
+                    camera_info_topic=self.config.camera_info_topic if self.config.camera_source == "ros" else None,
+                    intrinsics_path=str(path),
+                    camera_matrix_matches=equal_array(k,fixed_k),
+                    distortion_matches=equal_array(d.reshape(-1),fixed_d.reshape(-1)))
+
+    @serialized
+    def check_spatial_camera(self, _params: dict[str, Any]) -> dict[str, Any]:
+        return self._spatial_camera_diagnostics()
 
     def _paths(self) -> tuple[Path, Path, Path]:
         out = Path(self.config.output_dir).expanduser().resolve()
@@ -739,6 +913,12 @@ class Bridge:
             else:
                 value = str(value)
             values[key] = value
+        # Project switching restores the board geometry originally used by the destination
+        # instead of interpreting its samples using the previous project's board
+        if "output_dir" in params and str(values["output_dir"]) != self.config.output_dir:
+            board_settings = self._project_board_settings(Path(values["output_dir"]).expanduser().resolve())
+            if board_settings:
+                values.update(board_settings)
         candidate = AppConfig(**values)
         CalibrationBoard(candidate.board_config())
         if candidate.camera_source not in ("ros", "v4l2"):
@@ -753,6 +933,14 @@ class Bridge:
         changed = {key for key in values if values[key] != getattr(self.config, key)}
         board_changed = bool(changed & BOARD_FIELDS)
         board_only = bool(changed) and changed <= BOARD_FIELDS
+        force_switch = params.get("force_switch", False)
+        if type(force_switch) is not bool:
+            raise ValueError("强制切换确认必须为布尔值")
+        if force_switch and (changed - {"output_dir"} - BOARD_FIELDS or "output_dir" not in changed):
+            raise ValueError("强制切换只能单独用于更改项目输出目录")
+        new_session = None
+        if "output_dir" in changed:
+            new_session = self._read_project_session(Path(candidate.output_dir).expanduser().resolve(), candidate)
         reset_captures = params.get("reset_captures", False)
         if reset_captures not in (True, False):
             raise ValueError("清空采集参数必须是布尔值")
@@ -763,7 +951,7 @@ class Bridge:
                 raise ValueError("请选择当前 OpenCV 支持的 ArUco 字典")
         acquisition = {"output_dir", "camera_source", "image_topic", "camera_info_topic", "camera_frame", "robot_base_frame", "robot_end_frame", "camera_index", "camera_width", "camera_height", "chessboard_cols", "chessboard_rows", "square_size_mm", "board_type", "ros_input_type", "pose_topic", "joint_dof", "joint_names"} | {k for k in values if k.startswith("charuco_")}
         if changed & acquisition and (self.intrinsic.image_sets or self.handeye.samples):
-            if not (board_only and board_changed and reset_captures):
+            if not (force_switch and "output_dir" in changed and changed <= ({"output_dir"} | BOARD_FIELDS)) and not (board_only and board_changed and reset_captures):
                 if 'output_dir' in changed:
                     raise ValueError(
                         '当前会话已经采集了样本，无法直接切换输出目录，以免样本和标定结果分散，'
@@ -775,15 +963,36 @@ class Bridge:
             raise ValueError("更换相机配置前请关闭相机")
         if self.ros.running and changed & {"ros_input_type", "pose_topic", "robot_base_frame", "robot_end_frame", "joint_dof", "joint_names"}:
             raise ValueError("更换位姿来源前请断开 ROS")
+        # Write the old project's recoverable state before changing its path
+        if "output_dir" in changed:
+            self._persist_intrinsic_captures()
+            if self.handeye.samples and (self.samples_dirty or not self._paths()[2].is_file()):
+                self.save_samples({})
         Path(candidate.output_dir).expanduser().mkdir(parents=True, exist_ok=True)
         candidate.save(self.config_path)
         self.config = candidate
+        if "output_dir" in changed:
+            self.intrinsic, self.handeye, self.source_frames = new_session
+            self.samples_dirty = False
+            self.validation_collection = HandEyeCollection()
+            self.validation_source = ""
+            self.validation_reports = {'offline': None, 'live': None}
+            self.validation_live_preview = None
+            self.validation_overlay_enabled = False
+            self.spatial_overlay_enabled = False
+            self.spatial_contact = None
+            self.spatial_measurements = []
+            self.servo_target = None
+            self.servo_history = []
+            self._restore_validation_session()
         if board_changed:
-            self._invalidate_validation()
+            if "output_dir" not in changed:
+                self._invalidate_validation()
             self.board_found, self.board_corners = False, None
             self.preview_board = None
             self.preview_detection = None
         if board_changed and reset_captures:
+            self._intrinsic_capture_path().unlink(missing_ok=True)
             self.intrinsic = IntrinsicCalibration()
             self.handeye = HandEyeCollection()
             self.source_frames = None
@@ -918,8 +1127,10 @@ class Bridge:
         k,d,metadata=load_intrinsics(intrinsics)
         from validation_engine import _intrinsics
         expected_k,expected_d,expected_size=_intrinsics(frozen)
-        if frame.shape[1::-1] != tuple(expected_size) or not np.allclose(k,expected_k,atol=1e-8,rtol=0) or not np.allclose(d,expected_d,atol=1e-8,rtol=0):
-            raise ValueError('当前相机分辨率或内参与求解时不同，请恢复原相机配置')
+        diagnostics = self._spatial_camera_diagnostics()
+        if not diagnostics["ok"]:
+            raise ValueError("针尖测量相机配置不一致：" + "；".join(diagnostics["problems"]) +
+                             f"；RGB 来源：{diagnostics['image_topic']}；内参文件：{diagnostics['intrinsics_path']}")
         detector=CalibrationBoard(self.config.board_config())
         observation=detector.detect(cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY),k,d)
         target_to_camera,error=solve_board_pose(observation.object_points,observation.image_points,k,d)
@@ -1213,6 +1424,7 @@ class Bridge:
 
     @serialized
     def clear_intrinsic(self, _params: dict[str, Any]) -> dict[str, Any]:
+        self._intrinsic_capture_path().unlink(missing_ok=True)
         self.intrinsic = IntrinsicCalibration()
         self._emit_state()
         return {"count": 0}
@@ -2189,6 +2401,10 @@ class Bridge:
             return self._state()
         if method == "set_config":
             return self._apply_config(params)
+        if method == "switch_project":
+            return self.switch_project(params)
+        if method == "check_spatial_camera":
+            return self.check_spatial_camera(params)
         if method == "update_board":
             return self.update_board(params)
         if method == "discover_topics":

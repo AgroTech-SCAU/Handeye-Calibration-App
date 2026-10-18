@@ -49,6 +49,7 @@ const state = {
   page:'connect', theme:localStorage.getItem('handeye-theme') || 'dark', language:initialLanguage, backend:'starting', runtime:null,
   data:{ config:{output_dir:'',camera_source:'ros',image_topic:'',camera_info_topic:'',camera_frame:'',robot_base_frame:'',robot_end_frame:'',camera_index:0,camera_width:640,camera_height:480,chessboard_cols:11,chessboard_rows:8,square_size_mm:15,board_type:'chessboard',charuco_squares_x:14,charuco_squares_y:9,charuco_marker_size_mm:15,charuco_dictionary:'DICT_5X5_100',charuco_min_corners:6,charuco_legacy_pattern:false,ros_input_type:'transform',pose_topic:'',joint_dof:5,joint_names:'',capture_topic:'',status_topic:'/handeye/status'}, camera:{open:false,board_found:false,width:640,height:480}, ros:{running:false,pose:null}, intrinsics:{count:0,exists:false}, handeye:{count:0,samples_exists:false}, validation:{reference_status:'unavailable',report:null,live_count:0,import_path:''}, output_dir:'' },
   arucoDictionaries:[], discoveredTopics:[], discoveredOnce:false, topicDetails:{}, autoFilled:new Set(), inspectingTopic:false, preview:'', logs:'', intrinsicQuality:'standard', handeyeQuality:'standard', sampleMode:'auto', manualType:'quaternion', angleUnit:'deg', solveMode:'robust',
+  forceProjectSwitch:false, projectCandidate:'', cameraDiagnostic:null,
   intrinsicResult:null, solveResult:null, validationMode:'offline', spatialServoMode:'manual', validationThresholds:{translation_rms_mm:5,rotation_rms_deg:1,projection_rms_px:4}, selectedSampleIds:new Set(), busyJob:null, toolCompletions:new Map(), runtimeInstallLog:'', runtimeInstallState:'idle', expandedCards:loadExpandedCards()
 }
 
@@ -66,6 +67,13 @@ function createMockApi() {
     request: async (method,params={}) => {
       if(method==='get_state'||method==='ping') return method==='ping'?{pong:true,mock:true}:mock
       if(method==='set_config'){ Object.assign(mock.config,params); mock.output_dir=mock.config.output_dir; emit('state',mock); return mock }
+      if(method==='switch_project'){
+        if(mock.handeye.count>0&&!params.force_switch)throw new Error(t('connect.forceProjectWarning'))
+        mock.config.output_dir=params.output_dir;mock.output_dir=params.output_dir
+        mock.handeye={count:0,samples:[],samples_exists:false};mock.intrinsics={count:0,exists:false};mock.validation={reference_status:'unavailable'}
+        emit('state',mock);return mock
+      }
+      if(method==='check_spatial_camera')return {ok:true,problems:[],image_size:[1280,800],frozen_size:[1280,800],file_size:[1280,800],camera_info_size:[1280,800],camera_matrix_matches:true,distortion_matches:true,image_topic:'/camera/color/image_raw'}
       if(method==='update_board'){ const {reset_captures,...board}=params;Object.assign(mock.config,board);if(reset_captures){mock.intrinsics.count=0;mock.handeye.count=0}emit('state',mock);return mock }
       if(method==='discover_topics')return {topics:[]};
       if(method==='inspect_topic')return {received:false,metadata:{}};
@@ -337,7 +345,7 @@ function renderConnect(){
     <div class="metric"><div class="metric-label">${t('connect.metricOutput')}</div><div class="metric-value">${state.data.handeye?.count||0}<small>${t('connect.samples')}</small></div><div class="metric-meta" id="connect-output-meta">${escapeHtml(c.output_dir||t('connect.notConfigured'))}</div></div>
   </div>
   <div class="grid preview-layout">${preview()}<div class="stack">
-    ${card(t('connect.projectSettings'),t('connect.projectSettingsDesc'),'folder',`<div class="field"><label for="output-dir">${t('field.outputDir')}</label><div class="inline-control"><input class="control" id="output-dir" value="${escapeHtml(c.output_dir)}"/><button class="btn" id="browse-output">${icon('folder')}${t('action.browse')}</button></div></div>`)}
+    ${card(t('connect.projectSettings'),t('connect.projectSettingsDesc'),'folder',`<div class="field"><label for="output-dir">${t('field.outputDir')}</label><div class="inline-control"><input class="control" id="output-dir" value="${escapeHtml(state.projectCandidate||c.output_dir)}"/><button class="btn" id="browse-output">${icon('folder')}${t('action.browse')}</button></div></div><label class="project-force-confirm"><input type="checkbox" id="force-project-checkbox" ${state.forceProjectSwitch?'checked':''}><span>${t('connect.forceProjectConfirm')}</span></label><p class="help">${t('connect.forceProjectHelp')}</p><div class="actions"><button class="btn danger" id="force-switch-project" ${state.forceProjectSwitch?'':'disabled'}>${icon('folder')}${t('connect.forceProjectButton')}</button></div>`)}
     ${card(t('connect.robotInterface'),t('connect.robotInterfaceDesc'),'plug',`
     <div class="interface-section"><div class="interface-section-title">${icon('camera')}<b>${t('connect.cameraInterface')}</b></div>
       <div class="form-row"><div class="field full"><label for="camera-source">${t('field.cameraSource')}</label><select class="control" id="camera-source"><option value="ros" ${isRos?'selected':''}>ROS2 Image</option><option value="v4l2" ${!isRos?'selected':''}>V4L2 / USB</option></select></div></div>
@@ -461,7 +469,7 @@ function renderSpatialValidation(){
   ${card(t('spatial.modeTitle'),t('spatial.modeIntro'),'target',`<div class="interface-guide">${icon('info')}<span>${t('spatial.manualOnly')}</span></div><div class="help">${t('spatial.servoRequirements')}</div>`)}
   <div class="validation-mode">${segmentedControl('validation-mode','spatial',[['offline',t('validation.offline')],['live',t('validation.live')],['spatial',t('spatial.mode')]])}</div>
   <div class="grid preview-layout">${preview()}<div class="stack">
-  ${card(t('spatial.step1'),t('spatial.step1Desc'),'check',`<div class="help">${ready?t('validation.ready'):t('spatial.needFreeze')}</div><div class="help">${m.loaded?`${escapeHtml(m.name)} · ${m.links.length} Links`:t('guide.modelMissing')}</div>`,`<div class="actions">${btn('spatial-freeze',t('validation.freeze'),'check')}${btn('spatial-connect',t('spatial.gotoConnect'),'plug')}</div>`)}
+  ${card(t('spatial.step1'),t('spatial.step1Desc'),'check',`<div class="help">${ready?t('validation.ready'):t('spatial.needFreeze')}</div><div class="help">${m.loaded?`${escapeHtml(m.name)} · ${m.links.length} Links`:t('guide.modelMissing')}</div><div class="pose-box" id="spatial-camera-diagnostics">${state.cameraDiagnostic?escapeHtml(state.cameraDiagnostic):escapeHtml(t('spatial.cameraPreflightHint'))}</div>`,`<div class="actions">${btn('spatial-freeze',t('validation.freeze'),'check')}${btn('spatial-connect',t('spatial.gotoConnect'),'plug')}${btn('spatial-camera-check',t('spatial.cameraPreflight'),'scan','',ready?'':'disabled')}</div>`)}
   ${card(t('spatial.step2'),t('spatial.step2Desc'),'target',`<div class="field"><label for="spatial-tool-link">${t('spatial.tool')}</label><select class="control" id="spatial-tool-link">${links.map(link=>`<option value="${escapeHtml(link)}" ${link===preferred?'selected':''}>${escapeHtml(link)}</option>`).join('')}</select><div class="help">${t('spatial.toolHint')}</div></div><div class="field"><label for="spatial-corner-id">${t('spatial.corner')}</label><input class="control" type="number" id="spatial-corner-id" min="0" step="1" value="${state.spatialCorner??0}"/><div class="help">${t('spatial.cornerHint')}</div></div>
   <div class="pose-box" style="margin-top:10px">${ref?`${t('spatial.point')}: ${ref.point_m.map(v=>n(v,5)).join('  ')} m\n${escapeHtml(ref.link)} · ID ${ref.corner_id}`:t('spatial.noContact')}</div>`,`<div class="actions">${btn('spatial-resolve',t('spatial.previewLink'),'scan','',m.loaded?'':'disabled')}${btn('spatial-contact',t('spatial.recordContact'),'target','primary',ready&&m.loaded?'':'disabled')}</div>`,true)}
   ${card(t('spatial.step3'),t('spatial.step3Desc'),'camera',`<div class="help">${t('spatial.measureHint')}</div><div class="grid two" style="margin-top:12px">${validationMetric(t('spatial.rms'),sp.rms_mm,'mm')}${validationMetric(t('spatial.max'),sp.max_mm,'mm')}</div><div class="help">${t('spatial.count',{count:sp.count||0})}</div>`,`<div class="actions">${btn('spatial-measure',t('spatial.measure'),'scan','primary',ref?'':'disabled')}${btn('spatial-clear',t('spatial.clear'),'trash','danger',ref?'':'disabled')}</div>`,true)}
@@ -553,7 +561,7 @@ function renderPage(animate=false){
   bindPage(); updateShell()
 }
 
-async function commitOutputDirectory(selected){
+async function commitOutputDirectory(selected,force=false){
   const previous=state.data.config?.output_dir||''
   const proposed=String(selected??'').trim()
   const input=$('#output-dir')
@@ -568,19 +576,27 @@ async function commitOutputDirectory(selected){
   }
   try{
     // Persist only the output path and leave other unsaved connection settings intact
-    const saved=await request('set_config',{output_dir:proposed})
+    const saved=await request('switch_project',{output_dir:proposed,force_switch:Boolean(force)})
     state.data=saved
+    state.projectCandidate=''
+    state.forceProjectSwitch=false
+    state.cameraDiagnostic=null
+    state.intrinsicResult=null
+    state.solveResult=null
+    state.selectedSampleIds.clear()
     const path=saved.config.output_dir
     const currentInput=$('#output-dir')
     if(currentInput)currentInput.value=path
     const meta=$('#connect-output-meta')
     if(meta)meta.textContent=path
     toast(t('toast.settingsSaved'),path,'success')
+    renderPage(false)
     return true
   }catch(_error){
-    // Revert to the active directory after a backend rejection
+    // Keep the path ready for a deliberate force-switch retry
+    state.projectCandidate=proposed
     const currentInput=$('#output-dir')
-    if(currentInput)currentInput.value=previous
+    if(currentInput)currentInput.value=proposed
     return false
   }
 }
@@ -588,7 +604,7 @@ async function commitOutputDirectory(selected){
 function configFromForm(scope='connect'){
   const c={...state.data.config};
   if(scope==='connect'){
-    c.output_dir=$('#output-dir')?.value??c.output_dir;c.camera_source=$('#camera-source')?.value??c.camera_source;c.image_topic=$('#image-topic')?.value??c.image_topic;c.camera_info_topic=$('#camera-info-topic')?.value??c.camera_info_topic;c.camera_frame=$('#camera-frame')?.value??c.camera_frame;c.robot_base_frame=$('#robot-base-frame')?.value??c.robot_base_frame;c.robot_end_frame=$('#robot-end-frame')?.value??c.robot_end_frame;c.camera_index=Number($('#camera-index')?.value??c.camera_index);c.camera_width=Number($('#camera-width')?.value??c.camera_width);c.camera_height=Number($('#camera-height')?.value??c.camera_height);c.ros_input_type=$('#ros-input-type')?.value??c.ros_input_type;c.pose_topic=$('#pose-topic')?.value??c.pose_topic;c.joint_dof=Number($('#joint-dof')?.value??c.joint_dof);c.joint_names=$('#joint-names')?.value??c.joint_names;c.capture_topic=$('#capture-topic')?.value??c.capture_topic;c.status_topic=$('#status-topic')?.value??c.status_topic
+    c.output_dir=state.data.config.output_dir;c.camera_source=$('#camera-source')?.value??c.camera_source;c.image_topic=$('#image-topic')?.value??c.image_topic;c.camera_info_topic=$('#camera-info-topic')?.value??c.camera_info_topic;c.camera_frame=$('#camera-frame')?.value??c.camera_frame;c.robot_base_frame=$('#robot-base-frame')?.value??c.robot_base_frame;c.robot_end_frame=$('#robot-end-frame')?.value??c.robot_end_frame;c.camera_index=Number($('#camera-index')?.value??c.camera_index);c.camera_width=Number($('#camera-width')?.value??c.camera_width);c.camera_height=Number($('#camera-height')?.value??c.camera_height);c.ros_input_type=$('#ros-input-type')?.value??c.ros_input_type;c.pose_topic=$('#pose-topic')?.value??c.pose_topic;c.joint_dof=Number($('#joint-dof')?.value??c.joint_dof);c.joint_names=$('#joint-names')?.value??c.joint_names;c.capture_topic=$('#capture-topic')?.value??c.capture_topic;c.status_topic=$('#status-topic')?.value??c.status_topic
     if(c.ros_input_type==='transform'){c.robot_base_frame='';c.robot_end_frame=''}
   }
   if(scope==='board'){
@@ -934,6 +950,22 @@ function bindPage(){
     try{await request('record_spatial_contact',{link,corner_id},t('spatial.recordContact'));state.spatialLink=link;state.spatialCorner=corner_id;await refreshState();toast(t('spatial.recordContact'),t('spatial.recorded'),'success')}
     catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
   })
+  $('#spatial-camera-check')?.addEventListener('click',async()=>{
+    try{
+      const r=await request('check_spatial_camera')
+      const size=x=>Array.isArray(x)?x.join(' × '):'—'
+      state.cameraDiagnostic=[
+        `${t('spatial.cameraImage')}: ${size(r.image_size)} · ${r.image_topic||'—'}`,
+        `${t('spatial.cameraFrozen')}: ${size(r.frozen_size)}`,
+        `${t('spatial.cameraFile')}: ${size(r.file_size)}`,
+        `CameraInfo: ${size(r.camera_info_size)}`,
+        `K: ${r.camera_matrix_matches?'✓':'✗'}   D: ${r.distortion_matches?'✓':'✗'}`,
+        ...(r.problems||[])
+      ].join('\n')
+      const label=$('#spatial-camera-diagnostics');if(label)label.textContent=state.cameraDiagnostic
+      toast(t('spatial.cameraPreflight'),r.ok?t('spatial.cameraPreflightOk'):r.problems.join('；'),r.ok?'success':'warning')
+    }catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
+  })
   $('#spatial-measure')?.addEventListener('click',async()=>{
     try{const r=await request('measure_spatial_target',{},t('spatial.measure'));await refreshState();toast(t('spatial.measure'),`${n(r.error_mm,2)} mm`,'success')}
     catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
@@ -1008,14 +1040,31 @@ function bindPage(){
     if(!window.confirm(t('guide.confirmClear')))return
     await request('clear_robot_model',{},t('guide.clearModel'));await refreshState()
   })
+  $('#force-project-checkbox')?.addEventListener('change',event=>{
+    state.forceProjectSwitch=event.target.checked
+    const button=$('#force-switch-project');if(button)button.disabled=!state.forceProjectSwitch
+    if(!state.forceProjectSwitch)state.projectCandidate=''
+  })
+  $('#force-switch-project')?.addEventListener('click',async()=>{
+    if(!$('#force-project-checkbox')?.checked)return
+    const proposed=$('#output-dir')?.value?.trim()
+    if(!proposed||proposed===state.data.config.output_dir){toast(t('connect.chooseAnotherProject'),'','warning');return}
+    if(!window.confirm(t('connect.forceProjectWarning')))return
+    await commitOutputDirectory(proposed,true)
+  })
   $('#browse-output')?.addEventListener('click',async()=>{
     try{
       const p=await api?.selectDirectory($('#output-dir')?.value||state.data.config?.output_dir||'')
-      if(p)await commitOutputDirectory(p)
+      if(p){
+        if($('#force-project-checkbox')?.checked){state.projectCandidate=p;$('#output-dir').value=p}
+        else await commitOutputDirectory(p)
+      }
     }catch(error){toast(t('toast.operationFailed'),error.message||String(error),'danger')}
   })
-  // Persist manually typed paths before the next state refresh
-  $('#output-dir')?.addEventListener('change',async event=>{await commitOutputDirectory(event.target.value)})
+  $('#output-dir')?.addEventListener('change',async event=>{
+    if($('#force-project-checkbox')?.checked){state.projectCandidate=event.target.value;return}
+    await commitOutputDirectory(event.target.value)
+  })
   $('#connect-robot')?.addEventListener('click',async()=>{
     const config=configFromForm('connect')
     const error=validateConnection(config)
