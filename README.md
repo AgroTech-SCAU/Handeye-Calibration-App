@@ -114,11 +114,25 @@ ROS_SETUP=/path/to/ros/setup.bash ./launch.sh
 npm run start:mock
 ```
 
-生成 Linux 安装包
+### 本地构建 Linux 安装包
+
+先运行 `./install.sh` 安装所需依赖，再在 Linux x86_64 环境中执行
 
 ```bash
 ./build_linux.sh
 ```
+
+构建成功后可在 `dist/` 中找到两个安装包
+
+```text
+dist/
+├── HandEye-Calibration-linux-x86_64.AppImage
+└── HandEye-Calibration-linux-amd64.deb
+```
+
+建议分别安装并验证 AppImage 与 deb，再手动上传到 GitHub Releases 的 Assets 区域
+
+构建脚本只生成本地文件，不会自动提交代码、创建 Tag 或发布 Release
 
 ## 工作流程
 
