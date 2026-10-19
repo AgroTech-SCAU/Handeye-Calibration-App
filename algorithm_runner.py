@@ -66,19 +66,40 @@ def run_algorithm(
                     use_ba=solve_mode == "ba",
                 )
                 return 0 if result is not None else 1
-            if name == "verify":
-                module = importlib.import_module("verify")
-                result_path = samples_path.with_name(f"{samples_path.stem}_result.yaml")
-                old_argv = sys.argv
-                try:
-                    sys.argv = ["verify.py", str(samples_path), "--result", str(result_path)]
-                    module.main()
-                finally:
-                    sys.argv = old_argv
-                return 0
             raise ValueError(f"未知算法任务：{name}")
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 1
     except Exception:
         emit(traceback.format_exc())
         return 1
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+    import pickle
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--job", required=True, choices=("intrinsic", "diagnose", "solve"))
+    parser.add_argument("--samples", default="")
+    parser.add_argument("--mode", default="robust")
+    parser.add_argument("--snapshot", default="")
+    parser.add_argument("--output", default="")
+    parser.add_argument("--quality", default="standard")
+    parser.add_argument("--board", default="{}")
+    args = parser.parse_args()
+    if args.job == "intrinsic":
+        try:
+            with open(args.snapshot, "rb") as f:
+                calibration = pickle.load(f)
+            board = json.loads(args.board)
+            result = calibration.solve(Path(args.output),
+                                       int(board.get("cols", board.get("squares_x", 0))),
+                                       int(board.get("rows", board.get("squares_y", 0))),
+                                       float(board.get("square_size_mm", 0)),
+                                       quality_mode=args.quality, board=board)
+            print("HANDEYE_JOB_RESULT:" + json.dumps(result, ensure_ascii=False), flush=True)
+            sys.exit(0)
+        except Exception:
+            traceback.print_exc()
+            sys.exit(1)
+    sys.exit(run_algorithm(args.job, Path(args.samples), args.mode, sys.stdout.write))

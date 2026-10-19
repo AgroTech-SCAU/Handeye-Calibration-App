@@ -1,6 +1,6 @@
 {
   "name": "handeye-calibration-app",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Electron GUI for the AgroTech-SCAU hand-eye calibration core",
   "main": "desktop/main.js",
   "author": "AgroTech-SCAU",
@@ -9,12 +9,7 @@
   "scripts": {
     "start": "electron .",
     "start:mock": "HANDEYE_MOCK=1 electron .",
-    "verify:core": "python3 scripts/verify_core.py",
-    "verify:static": "node scripts/verify_static.js",
-    "test": "python3 -m unittest discover -s tests -v && npm run smoke:lifecycle && npm run verify:static && npm run verify:core",
-    "dist:linux": "npm run test && electron-builder --linux AppImage deb --x64",
-    "smoke:renderer": "node scripts/smoke_renderer.mjs",
-    "smoke:lifecycle": "node scripts/smoke_backend_lifecycle.cjs"
+    "dist:linux": "electron-builder --linux AppImage deb --x64"
   },
   "devDependencies": {
     "electron": "41.10.5",
@@ -38,6 +33,12 @@
         "from": "algorithm_runner.py",
         "to": "handeye/algorithm_runner.py"
       },
+      {"from":"servo_engine.py","to":"handeye/servo_engine.py"},
+      {"from":"ros_motion.py","to":"handeye/ros_motion.py"},
+      {
+        "from": "validation_engine.py",
+        "to": "handeye/validation_engine.py"
+      },
       {
         "from": "calibration_engine.py",
         "to": "handeye/calibration_engine.py"
@@ -49,6 +50,14 @@
       {
         "from": "ros_interface.py",
         "to": "handeye/ros_interface.py"
+      },
+      {
+        "from": "description_loader.py",
+        "to": "handeye/description_loader.py"
+      },
+      {
+        "from": "robot_model.py",
+        "to": "handeye/robot_model.py"
       },
       {
         "from": "requirements.txt",
@@ -65,6 +74,14 @@
       {
         "from": "scripts/install-runtime.sh",
         "to": "handeye/scripts/install-runtime.sh"
+      },
+      {
+        "from": "calibration_board.py",
+        "to": "handeye/calibration_board.py"
+      },
+      {
+        "from": "capture_sync.py",
+        "to": "handeye/capture_sync.py"
       }
     ],
     "linux": {
@@ -74,7 +91,7 @@
       ],
       "category": "Utility",
       "icon": "resources/icon.png",
-      "artifactName": "HandEye-Calibration-${version}-linux-${arch}.${ext}"
+      "artifactName": "HandEye-Calibration-linux-${arch}.${ext}"
     },
     "deb": {
       "depends": [

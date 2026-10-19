@@ -22,18 +22,42 @@ def find_default_calib_dir() -> Path:
 class AppConfig:
     calib_dir: str = str(find_default_calib_dir())
     output_dir: str = str((PORTABLE_DIR / "output").resolve())
+    camera_source: str = "ros"
+    image_topic: str = ""
+    camera_info_topic: str = ""
+    aligned_depth_topic: str = ""
+    motion_action: str = "/move_action"
+    motion_group: str = "arm"
     camera_index: int = 0
     camera_width: int = 640
     camera_height: int = 480
     chessboard_cols: int = 11
     chessboard_rows: int = 8
     square_size_mm: float = 15.0
-    ros_input_type: str = "pose"
-    pose_topic: str = "/arm/pose"
+    board_type: str = "chessboard"
+    charuco_squares_x: int = 14
+    charuco_squares_y: int = 9
+    charuco_marker_size_mm: float = 15.0
+    charuco_dictionary: str = "DICT_5X5_100"
+    charuco_min_corners: int = 6
+    charuco_legacy_pattern: bool = False
+    ros_input_type: str = "transform"
+    robot_base_frame: str = ""
+    robot_end_frame: str = ""
+    camera_frame: str = ""
+    pose_topic: str = ""
     joint_dof: int = 5
     joint_names: str = ""
+    robot_model_path: str = ""
     capture_topic: str = "/handeye/capture"
     status_topic: str = "/handeye/status"
+
+    def board_config(self):
+        if self.board_type == "chessboard":
+            return dict(type="chessboard", cols=self.chessboard_cols, rows=self.chessboard_rows, square_size_mm=self.square_size_mm)
+        return dict(type=self.board_type, squares_x=self.charuco_squares_x, squares_y=self.charuco_squares_y,
+            square_size_mm=self.square_size_mm, marker_size_mm=self.charuco_marker_size_mm,
+            dictionary=self.charuco_dictionary, min_corners=self.charuco_min_corners, legacy_pattern=self.charuco_legacy_pattern)
 
     @classmethod
     def load(cls, path: Path) -> "AppConfig":

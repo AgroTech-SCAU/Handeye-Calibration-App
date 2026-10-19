@@ -267,7 +267,7 @@ async function bridgeRequest(method, params = {}) {
     const timer = setTimeout(() => {
       pending.delete(id)
       reject(new Error(`Backend timeout: ${method}`))
-    }, method === 'run_tool' ? 180000 : 20000)
+    }, method === 'run_tool' ? 180000 : method === 'get_model_preview' ? 60000 : 20000)
     pending.set(id, { resolve, reject, timer })
     try {
       python.stdin.write(JSON.stringify({ id, method, params }) + '\n')
@@ -357,10 +357,43 @@ ipcMain.handle('handeye:select-directory', async (_event, initial) => {
   })
   return result.canceled ? '' : (result.filePaths[0] || '')
 })
+ipcMain.handle('handeye:select-intrinsics', async () => {
+  const result = await dialog.showOpenDialog(win, {
+    title: '选择相机内参 YAML',
+    properties: ['openFile'],
+    filters: [{ name: 'YAML', extensions: ['yaml', 'yml'] }]
+  })
+  return result.canceled ? '' : (result.filePaths[0] || '')
+})
+ipcMain.handle('handeye:select-robot-model', async () => {
+  const result = await dialog.showOpenDialog(win, {
+    title: '导入 Description ZIP 或 URDF / Xacro',
+    properties: ['openFile'],
+    filters: [{ name: 'Description / Robot model', extensions: ['zip', 'urdf', 'xacro'] }]
+  })
+  return result.canceled ? '' : (result.filePaths[0] || '')
+})
+ipcMain.handle('handeye:select-description-folder', async () => {
+  const result = await dialog.showOpenDialog(win, {
+    title: '选择 ROS2 Description 文件夹',
+    properties: ['openDirectory']
+  })
+  return result.canceled ? '' : (result.filePaths[0] || '')
+})
+ipcMain.handle('handeye:select-samples', async (_event, initial) => {
+  const initialDirectory = typeof initial === 'string' && fs.existsSync(initial)
+    ? initial : app.getPath('documents')
+  const result = await dialog.showOpenDialog(win, {
+    title: '选择手眼标定样本 YAML',
+    defaultPath: initialDirectory,
+    properties: ['openFile'],
+    filters: [{ name: 'YAML', extensions: ['yaml', 'yml'] }]
+  })
+  return result.canceled ? '' : (result.filePaths[0] || '')
+})
 ipcMain.handle('handeye:runtime-info', () => {
   const cfg = bridgeCommand()
   return {
-    appVersion: app.getVersion(),
     packaged: app.isPackaged,
     platform: process.platform,
     arch: process.arch,

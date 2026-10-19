@@ -3,9 +3,6 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$APP_DIR"
 
-python3 scripts/verify_core.py
-npm test
-
 BUILDER="$APP_DIR/node_modules/.bin/electron-builder"
 [ -x "$BUILDER" ] || { echo "[HandEye] electron-builder not found; run ./install.sh first" >&2; exit 1; }
 

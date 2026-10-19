@@ -25,6 +25,7 @@ def diagnose(samples_path):
     # 加载原始 YAML 数据 (用于访问 square_size_mm 等元数据)
     with open(samples_path) as f:
         data = yaml.safe_load(f)
+    sample_ids = [sample.get("id", i + 1) for i, sample in enumerate(data.get("samples", []))]
 
     print(f"\n{'='*60}")
     print(f"  标定数据诊断 | {mode} | {n} 样本")
@@ -40,11 +41,11 @@ def diagnose(samples_path):
         # R_diff = R_prev.T @ R_curr: 如果接近 180°，说明棋盘格翻转了
         angle = rotation_angle_deg(R_prev.T @ R_curr)
         if angle > 120:
-            flips.append((i + 1, angle))
+            flips.append((sample_ids[i - 1], sample_ids[i], angle))
     if flips:
         print(f"  ⚠️  发现 {len(flips)} 对相邻样本旋转 > 120° (疑似翻转):")
-        for idx, ang in flips:
-            print(f"     样本 #{idx-1} → #{idx}: 旋转 {ang:.1f}°")
+        for before_id, after_id, ang in flips:
+            print(f"     样本 #{before_id} → #{after_id}: 旋转 {ang:.1f}°")
     else:
         print(f"  ✅ 未发现相邻样本翻转")
 
@@ -80,8 +81,8 @@ def diagnose(samples_path):
     # square_size_mm 优先从 samples.yaml 取 (采集时实际使用的值),
     # 其次从 camera_intrinsics.yaml 取 (标定时使用的值)
     sq_mm = data.get("square_size_mm", None)
-    # 优先使用 samples.yaml 记录的采集内参；GUI 可把输出放在独立目录，
-    # 因此不能总是读取本脚本目录中的旧 camera_intrinsics.yaml
+    # 优先使用 samples.yaml 记录的采集内参；GUI 可把输出放在独立目录
+    # 因此不能总是读取本脚本目录中的非当前项目的 camera_intrinsics.yaml
     intrinsics_name = data.get("intrinsics_file", "camera_intrinsics.yaml")
     intrinsics_file = (
         intrinsics_name
@@ -139,7 +140,7 @@ def diagnose(samples_path):
     # ── 5. 一致性预检 (不依赖求解结果) ──
     print(f"\n  ── ⑤ 位姿一致性预检 ──")
     # 对于 eye_in_hand: base_to_target = b2g_i * X * t2c_i = constant
-    # 如果 b2g_i^{-1} * b2g_j 和 t2c_i * t2c_j^{-1} 有相同的旋转角，
+    # 如果 b2g_i^{-1} * b2g_j 和 t2c_i * t2c_j^{-1} 有相同的旋转角
     # 说明数据内部一致 (Schmidt 1991 定理)
     from fk_utils import invert_transform
 

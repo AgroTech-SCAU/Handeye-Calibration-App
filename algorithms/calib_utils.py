@@ -5,6 +5,8 @@
 camera_calib.py / collect_samples.py / solve.py / verify.py 的公共函数.
 """
 
+import os
+import sys
 import cv2
 import numpy as np
 import yaml
@@ -13,7 +15,7 @@ import yaml
 
 
 def find_chessboard(gray, pattern_size):
-    """检测棋盘格角点, 兼容新旧 OpenCV"""
+    """检测棋盘格角点, 兼容 OpenCV 角点接口"""
     if hasattr(cv2, "findChessboardCornersSB"):
         found, corners = cv2.findChessboardCornersSB(
             gray,
@@ -35,7 +37,7 @@ def find_chessboard(gray, pattern_size):
 def corner_subpix_win(gray, pattern_size, corners=None):
     """返回不会跨到相邻角点的 ``cornerSubPix`` 半窗口
 
-    ``winSize=(w, w)`` 表示角点两侧各 ``w`` 像素；旧实现对
+    ``winSize=(w, w)`` 表示角点两侧各 ``w`` 像素；此前实现在
     640x480 / 11x8 棋盘返回 11，实际搜索区域达 23x23 px；当格宽只有
     14~20 px 时会把角点吸到相邻交点
     """
@@ -238,7 +240,16 @@ def load_sample_validity(
             reasons.append("robot_not_stable")
 
         corners = sample.get("corners_px")
-        if corners is not None and pattern_size is not None:
+        if data.get("board_type") == "charuco":
+            try:
+                root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                if root not in sys.path:
+                    sys.path.insert(0, root)
+                from calibration_board import sample_object_points
+                sample_object_points(data, sample)
+            except (KeyError, TypeError, ValueError):
+                reasons.append("charuco_geometry_invalid")
+        elif corners is not None and pattern_size is not None:
             try:
                 grid_ok, grid_diag = validate_chessboard_geometry(
                     np.asarray(corners, dtype=np.float64).reshape(-1, 1, 2),

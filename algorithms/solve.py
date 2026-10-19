@@ -43,6 +43,19 @@ MAX_SOLVABLE_TRANS_RMS_MM = 50.0
 MAX_SOLVABLE_ROT_RMS_DEG = 10.0
 
 
+
+def _result_frames(samples_path, mode):
+    """Frames are explicit sample metadata, never inferred from arm DOF or topic names"""
+    with open(samples_path, encoding="utf-8") as source:
+        data = yaml.safe_load(source) or {}
+    if mode != 'eye_in_hand':
+        return data.get('robot_base_frame') or 'arm_base_link', data.get('camera_frame') or 'camera_optical_frame'
+    parent, child = data.get('robot_end_frame'), data.get('camera_frame')
+    if parent and child:
+        return str(parent), str(child)
+    # Keep numerical solving available for historical samples without guessing frame names
+    return str(parent or 'UNRESOLVED_END_FRAME'), str(child or 'UNRESOLVED_CAMERA_FRAME')
+
 def _load_intrinsics_binding(samples_path):
     """提取采集时冻结的内参，随手眼结果一起部署"""
     with open(samples_path, encoding="utf-8") as f:
@@ -636,7 +649,7 @@ def _compute_all_pair_motions(
     for i in range(n):
         Bi_inv = invert_transform(B_list[i])
         for j in range(i + 1, n):
-            # 由固定参考位姿关系推导相对运动：
+            # 由固定参考位姿关系推导相对运动
             # eye-in-hand: inv(A_j) A_i X = X B_j inv(B_i)
             # eye-to-hand: A_j inv(A_i) X = X B_j inv(B_i)
             if mode == "eye_in_hand":
@@ -1120,8 +1133,7 @@ def _solve_simple(
     q = matrix_to_quaternion(X_display[:3, :3])
     r, p, y = matrix_to_rpy(X_display[:3, :3])
 
-    parent = "tool0" if mode == "eye_in_hand" else "arm_base_link"
-    child = "camera_optical_frame"
+    parent, child = _result_frames(samples_path, mode)
     label = (
         "相机在末端坐标系中的位置"
         if mode == "eye_in_hand"
@@ -1264,7 +1276,7 @@ def solve(samples_path, simple=False, use_ba=False):
         print("     - gripper_in_base 和 target_to_camera 未正确配对")
         stale_result = os.path.splitext(samples_path)[0] + "_result.yaml"
         if os.path.exists(stale_result):
-            print(f"   ⚠ 旧结果仍在 {stale_result}，本次并未更新，禁止继续部署旧文件")
+            print(f"   ⚠ 原有结果仍在 {stale_result}，本次并未更新，禁止继续部署该文件")
         return
 
     X_final, inlier_indices_local, removed_local, metrics = result
@@ -1282,15 +1294,14 @@ def solve(samples_path, simple=False, use_ba=False):
         print(f"\n  ✅ 无异常值, 全部 {n} 组参与求解")
 
     # ── 显示结果 ──
-    # OpenCV/本求解器的 X = ^gripper T_camera：相机在末端中的位姿，
+    # OpenCV/本求解器的 X = ^gripper T_camera：相机在末端中的位姿
     # 可直接作为 ROS parent=tool0, child=camera_optical_frame 的静态 TF
     X_display = X_final
     t = X_display[:3, 3]
     r, p, y = matrix_to_rpy(X_display[:3, :3])
     q = matrix_to_quaternion(X_display[:3, :3])
 
-    parent = "tool0" if mode == "eye_in_hand" else "arm_base_link"
-    child = "camera_optical_frame"
+    parent, child = _result_frames(samples_path, mode)
     label = (
         "相机在末端坐标系中的位置"
         if mode == "eye_in_hand"
@@ -1332,6 +1343,8 @@ def solve(samples_path, simple=False, use_ba=False):
                 sample_indices=inlier_indices,
                 verbose=True,
             )
+            if ba_result is None:
+                raise RuntimeError("BA 未产生有效结果")
             if ba_result is not None:
                 X_ba, Y_ba, ba_metrics = ba_result
                 ba_t_rms = float(ba_metrics["translation_rms_mm"])
@@ -1357,10 +1370,8 @@ def solve(samples_path, simple=False, use_ba=False):
                     f"  🧭 四元数 xyzw: [{q[0]:.6f}, {q[1]:.6f}, {q[2]:.6f}, {q[3]:.6f}]"
                 )
                 print(f"  📏 RPY: Roll={r:.6f}  Pitch={p:.6f}  Yaw={y:.6f} rad")
-        except ImportError:
-            print(f"  ⚠ bundle_adjust 模块加载失败，跳过 BA 精化")
         except Exception as e:
-            print(f"  ⚠ BA 精化失败: {e}")
+            raise RuntimeError(f"BA 精化失败，本次未更新结果: {e}") from e
 
     # ── 保存结果 ──
     result_path = os.path.splitext(samples_path)[0] + "_result.yaml"

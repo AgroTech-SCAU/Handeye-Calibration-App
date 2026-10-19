@@ -56,7 +56,7 @@ cd <仓库目录>
 
 ## 3. 开始任务：原则上先创建或认领 Issue
 
-Bug、需求、功能、测试、文档或明确的工程任务，原则上先形成 Issue，避免任务只存在于聊天记录里
+Bug、需求、功能、文档或明确的工程任务，原则上先形成 Issue，避免任务只存在于聊天记录里
 
 推荐流程：
 
@@ -88,7 +88,6 @@ feat/       新功能
 fix/        Bug 修复
 refactor/   重构
 docs/       文档
-test/       测试
 chore/      工程维护
 perf/       性能优化
 ```
@@ -100,7 +99,6 @@ feat/auto-navigation
 fix/fdcan-rx-callback
 refactor/arm-interface
 docs/development-flow
-test/can-parser
 ```
 
 机械臂、嵌入式等专业项目可继续使用已有的 `adapter/`、`behavior/`、`contract/`、`deploy/`、`sdk/`、`chip/` 等领域类型
@@ -222,7 +220,7 @@ Merge → main
 git switch -c feat/your-work
 ```
 
-这一步不会删除你刚才的 Commit；无论已经 Commit 1 次还是很多次，当前提交历史都会跟随新 Branch 保留下来
+这一步不会删除你刚才的 Commit；无论已经 Commit 1 次还是很多次，当前提交记录都会跟随新 Branch 保留下来
 
 ### 第二步：先 Push 新 Branch 到远端
 
