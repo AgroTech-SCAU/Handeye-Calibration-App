@@ -7,7 +7,6 @@
 独立接入相机与机器人数据，完成采集、求解、诊断与精度验证
 
 <p>
-  <a href="https://github.com/AgroTech-SCAU/Handeye-Calibration-App/actions/workflows/build-linux.yml"><img src="https://img.shields.io/github/actions/workflow/status/AgroTech-SCAU/Handeye-Calibration-App/build-linux.yml?branch=main&amp;label=Linux%20Build" alt="Linux Build" /></a>
   <img src="https://img.shields.io/badge/Platform-Linux-334155?logo=linux&amp;logoColor=white" alt="Linux" />
   <img src="https://img.shields.io/badge/Desktop-Electron-47848F?logo=electron&amp;logoColor=white" alt="Electron" />
   <img src="https://img.shields.io/badge/ROS-ROS2-22314E?logo=ros&amp;logoColor=white" alt="ROS2" />
@@ -114,11 +113,27 @@ ROS_SETUP=/path/to/ros/setup.bash ./launch.sh
 npm run start:mock
 ```
 
-生成 Linux 安装包
+### 本地构建 Linux 安装包
+
+先运行 `./install.sh` 安装依赖，再在 Linux x86_64 环境中执行
 
 ```bash
 ./build_linux.sh
 ```
+
+构建成功后可在 `dist/` 目录找到安装包
+
+```text
+dist/
+├── HandEye-Calibration-linux-x86_64.AppImage
+└── HandEye-Calibration-linux-amd64.deb
+```
+
+构建脚本会检查环境与文件，并在完成后输出安装包大小和 SHA256 校验值
+
+建议分别安装并验证 AppImage 与 deb，再将文件手动上传至 GitHub Releases 的 Assets 区域
+
+脚本仅在本地构建，不会自动创建 Tag 或发布 Release
 
 ## 工作流程
 

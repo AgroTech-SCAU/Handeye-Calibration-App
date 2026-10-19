@@ -1,116 +1,116 @@
 {
-    "name": "handeye-calibration-app",
-    "version": "0.1.0",
-    "description": "Electron GUI for the AgroTech-SCAU hand-eye calibration core",
-    "main": "desktop/main.js",
-    "author": {
-        "name": "AgroTech Innovation Lab",
-        "email": "kaerei@foxmail.com"
+  "name": "handeye-calibration-app",
+  "version": "0.1.0",
+  "description": "Electron GUI for the AgroTech-SCAU hand-eye calibration core",
+  "main": "desktop/main.js",
+  "author": {
+    "name": "AgroTech Innovation Lab",
+    "email": "kaerei@foxmail.com"
+  },
+  "license": "GPL-3.0-only",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "start:mock": "HANDEYE_MOCK=1 electron .",
+    "dist:linux": "electron-builder --linux AppImage deb --x64"
+  },
+  "devDependencies": {
+    "electron": "41.10.5",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "edu.scau.agrotech.handeye",
+    "productName": "HandEye Calibration",
+    "asar": true,
+    "directories": {
+      "output": "dist",
+      "buildResources": "resources"
     },
-    "license": "GPL-3.0-only",
-    "private": true,
-    "scripts": {
-        "start": "electron .",
-        "start:mock": "HANDEYE_MOCK=1 electron .",
-        "dist:linux": "electron-builder --linux AppImage deb --x64"
+    "files": [
+      "desktop/**/*",
+      "src/renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "algorithm_runner.py",
+        "to": "handeye/algorithm_runner.py"
+      },
+      {
+        "from": "servo_engine.py",
+        "to": "handeye/servo_engine.py"
+      },
+      {
+        "from": "ros_motion.py",
+        "to": "handeye/ros_motion.py"
+      },
+      {
+        "from": "validation_engine.py",
+        "to": "handeye/validation_engine.py"
+      },
+      {
+        "from": "calibration_engine.py",
+        "to": "handeye/calibration_engine.py"
+      },
+      {
+        "from": "config.py",
+        "to": "handeye/config.py"
+      },
+      {
+        "from": "ros_interface.py",
+        "to": "handeye/ros_interface.py"
+      },
+      {
+        "from": "description_loader.py",
+        "to": "handeye/description_loader.py"
+      },
+      {
+        "from": "robot_model.py",
+        "to": "handeye/robot_model.py"
+      },
+      {
+        "from": "requirements.txt",
+        "to": "handeye/requirements.txt"
+      },
+      {
+        "from": "algorithms",
+        "to": "handeye/algorithms"
+      },
+      {
+        "from": "backend",
+        "to": "handeye/backend"
+      },
+      {
+        "from": "scripts/install-runtime.sh",
+        "to": "handeye/scripts/install-runtime.sh"
+      },
+      {
+        "from": "calibration_board.py",
+        "to": "handeye/calibration_board.py"
+      },
+      {
+        "from": "capture_sync.py",
+        "to": "handeye/capture_sync.py"
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility",
+      "icon": "resources/icon.png",
+      "artifactName": "HandEye-Calibration-linux-${arch}.${ext}"
     },
-    "devDependencies": {
-        "electron": "41.10.5",
-        "electron-builder": "26.15.3"
-    },
-    "build": {
-        "appId": "edu.scau.agrotech.handeye",
-        "productName": "HandEye Calibration",
-        "asar": true,
-        "directories": {
-            "output": "dist",
-            "buildResources": "resources"
-        },
-        "files": [
-            "desktop/**/*",
-            "src/renderer/**/*",
-            "package.json"
-        ],
-        "extraResources": [
-            {
-                "from": "algorithm_runner.py",
-                "to": "handeye/algorithm_runner.py"
-            },
-            {
-                "from": "servo_engine.py",
-                "to": "handeye/servo_engine.py"
-            },
-            {
-                "from": "ros_motion.py",
-                "to": "handeye/ros_motion.py"
-            },
-            {
-                "from": "validation_engine.py",
-                "to": "handeye/validation_engine.py"
-            },
-            {
-                "from": "calibration_engine.py",
-                "to": "handeye/calibration_engine.py"
-            },
-            {
-                "from": "config.py",
-                "to": "handeye/config.py"
-            },
-            {
-                "from": "ros_interface.py",
-                "to": "handeye/ros_interface.py"
-            },
-            {
-                "from": "description_loader.py",
-                "to": "handeye/description_loader.py"
-            },
-            {
-                "from": "robot_model.py",
-                "to": "handeye/robot_model.py"
-            },
-            {
-                "from": "requirements.txt",
-                "to": "handeye/requirements.txt"
-            },
-            {
-                "from": "algorithms",
-                "to": "handeye/algorithms"
-            },
-            {
-                "from": "backend",
-                "to": "handeye/backend"
-            },
-            {
-                "from": "scripts/install-runtime.sh",
-                "to": "handeye/scripts/install-runtime.sh"
-            },
-            {
-                "from": "calibration_board.py",
-                "to": "handeye/calibration_board.py"
-            },
-            {
-                "from": "capture_sync.py",
-                "to": "handeye/capture_sync.py"
-            }
-        ],
-        "linux": {
-            "target": [
-                "AppImage",
-                "deb"
-            ],
-            "category": "Utility",
-            "icon": "resources/icon.png",
-            "artifactName": "HandEye-Calibration-linux-${arch}.${ext}"
-        },
-        "deb": {
-            "depends": [
-                "libgtk-3-0",
-                "libnss3",
-                "libxss1",
-                "libasound2 | libasound2t64",
-                "libgbm1",
-                "libfuse2 | libfuse2t64"
-            ]
-        }
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnss3",
+        "libxss1",
+        "libasound2 | libasound2t64",
+        "libgbm1",
+        "libfuse2 | libfuse2t64"
+      ]
     }
+  }
 }

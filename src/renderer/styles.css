@@ -383,6 +383,15 @@ textarea.control { height:auto; min-height:82px; padding-top:10px; resize:vertic
 .work-loader{margin:0 auto;width:36px;height:36px;border:3px solid var(--border-strong);border-top-color:var(--accent);border-radius:50%;animation:work-spin .75s linear infinite}
 @keyframes work-spin{to{transform:rotate(360deg)}}
 
+.work-modal-card:focus{outline:none}
+.work-result-icon{display:flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:50%;margin:0 auto;background:var(--surface-success,rgba(46,160,116,.12));color:var(--success)}
+.work-result-icon.danger{background:rgba(225,82,82,.12);color:var(--danger)}
+.work-result-icon svg{width:24px;height:24px;stroke-width:2}
+.work-modal-card .work-result-label{font-weight:600;margin:7px 0 13px;color:var(--text-primary)}
+.work-modal-card .work-result-detail{font-size:12px;margin:0 0 20px;padding:11px 13px;border:1px solid var(--border-default);background:var(--bg-subtle);border-radius:9px;text-align:left;overflow-wrap:anywhere;white-space:pre-wrap;user-select:text;max-height:155px;overflow-y:auto}
+.work-modal-card #work-result-close{margin-top:5px}
+
+
 /* Independent calibration verification */
 .validation-mode{margin:15px 0 16px;display:flex;align-items:center}
 .validation-fixed{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap}
