@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="460" viewBox="0 0 1280 460" role="img" aria-label="手眼标定系统架构示意图">
+<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f8fafc"/><stop offset="1" stop-color="#fff7ed"/></linearGradient>
+<filter id="shadow" x="-20%" y="-30%" width="140%" height="180%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#64748b" flood-opacity="0.12"/></filter>
+<marker id="arrow" markerWidth="10" markerHeight="10" refX="8.2" refY="5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#94a3b8"/></marker>
+</defs>
+<rect width="1280" height="460" rx="28" fill="url(#bg)"/>
+<text x="52" y="61" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="30" font-weight="750" fill="#0f172a">从多源数据到可信赖的标定结果</text>
+<text x="53" y="94" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="17" font-weight="400" fill="#64748b">相机与机器人独立接入  ·  采样同步  ·  求解诊断  ·  独立验证</text>
+<rect x="44" y="136" width="243" height="116" rx="20" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5" filter="url(#shadow)"/><rect x="44" y="136" width="5" height="116" rx="2" fill="#f59e0b"/>
+<text x="68" y="175" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="22" font-weight="700" fill="#0f172a">相机数据</text>
+<text x="68" y="208" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="16" font-weight="400" fill="#475569">ROS2 Image · CameraInfo</text>
+<text x="68" y="232" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="16" font-weight="400" fill="#475569">USB / V4L2</text>
+<rect x="44" y="276" width="243" height="116" rx="20" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5" filter="url(#shadow)"/><rect x="44" y="276" width="5" height="116" rx="2" fill="#f59e0b"/>
+<text x="68" y="315" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="22" font-weight="700" fill="#0f172a">机器人位姿</text>
+<text x="68" y="348" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="16" font-weight="400" fill="#475569">TF2 · Pose · Transform</text>
+<text x="68" y="372" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="16" font-weight="400" fill="#475569">JointState + URDF</text>
+<rect x="351" y="186" width="244" height="158" rx="20" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5" filter="url(#shadow)"/><rect x="351" y="186" width="5" height="158" rx="2" fill="#0ea5a3"/>
+<text x="373" y="230" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="23" font-weight="700" fill="#0f172a">采集与同步</text>
+<text x="373" y="264" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="17" font-weight="400" fill="#334155">Chessboard / ChArUco</text>
+<text x="373" y="291" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="16" font-weight="400" fill="#475569">姿态质量检查 · 样本留存</text>
+<text x="373" y="317" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="16" font-weight="400" fill="#475569">按项目恢复采集进度</text>
+<rect x="649" y="186" width="241" height="158" rx="20" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5" filter="url(#shadow)"/><rect x="649" y="186" width="5" height="158" rx="2" fill="#3b82f6"/>
+<text x="671" y="230" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="23" font-weight="700" fill="#0f172a">求解与诊断</text>
+<text x="671" y="264" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="17" font-weight="400" fill="#334155">手眼刚体变换估计</text>
+<text x="671" y="291" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="16" font-weight="400" fill="#475569">样本筛选 · 残差分析</text>
+<text x="671" y="317" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="16" font-weight="400" fill="#475569">结果冻结与导出</text>
+<rect x="943" y="186" width="293" height="158" rx="20" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5" filter="url(#shadow)"/><rect x="943" y="186" width="5" height="158" rx="2" fill="#8b5cf6"/>
+<text x="965" y="230" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="23" font-weight="700" fill="#0f172a">独立验证</text>
+<text x="965" y="264" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="17" font-weight="400" fill="#334155">离线验证 · 真机几何验证</text>
+<text x="965" y="291" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="16" font-weight="400" fill="#475569">针尖空间触点检查</text>
+<text x="965" y="317" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="16" font-weight="400" fill="#475569">差异诊断 · 质量报告</text>
+<path d="M289 194 L342 242" stroke="#94a3b8" stroke-width="3" fill="none" stroke-linecap="round" marker-end="url(#arrow)"/>
+<path d="M289 335 L342 289" stroke="#94a3b8" stroke-width="3" fill="none" stroke-linecap="round" marker-end="url(#arrow)"/>
+<path d="M597 263 L639 263" stroke="#94a3b8" stroke-width="3" fill="none" stroke-linecap="round" marker-end="url(#arrow)"/>
+<path d="M893 263 L933 263" stroke="#94a3b8" stroke-width="3" fill="none" stroke-linecap="round" marker-end="url(#arrow)"/>
+<text x="53" y="433" font-family="'Noto Sans CJK SC','Microsoft YaHei','PingFang SC',Arial,sans-serif" font-size="15" font-weight="400" fill="#64748b">机器人仍由外部控制系统负责运动</text>
+</svg>
