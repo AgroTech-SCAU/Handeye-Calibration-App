@@ -3,6 +3,7 @@ node_modules/
 dist/
 .runtime/
 output/
+datasets/
 __pycache__/
 *.pyc
 *.log
