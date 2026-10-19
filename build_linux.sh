@@ -80,4 +80,4 @@ if command -v sha256sum >/dev/null 2>&1; then
   printf '\nSHA256:\n'
   sha256sum -- "$OUTPUT_DIR/$APPIMAGE_NAME" "$OUTPUT_DIR/$DEB_NAME"
 fi
-printf '\n[HandEye] Verify both packages before uploading them to GitHub Releases\n
+printf '\n[HandEye] Verify both packages before uploading them to GitHub Releases\n'
