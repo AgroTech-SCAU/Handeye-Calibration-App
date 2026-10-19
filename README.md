@@ -1,175 +1,63 @@
-# Handeye-Calibration-App
+<div align="center">
 
-通用 ROS2 眼在手上标定桌面应用，独立于机械臂品牌、控制器与机器人系统集成框架
+# Handeye Calibration
+
+面向 ROS2 机器人的桌面手眼标定工具，支持眼在手上标定、独立验证和人工空间触点检查
+
+</div>
 
 ## 功能
 
-- ROS2 机器人位姿输入支持 `PoseStamped`、`TransformStamped`、TF2
-- 支持 `JointState + URDF` 正运动学和手动位姿输入，不再使用内置示例机械臂参数
-- 相机支持 ROS2 `Image`、`CameraInfo` 以及本地 V4L2 设备
-- 支持 Chessboard、CharUco、相机内参标定和内参文件导入
-- 保留 OpenCV、Robust、Bundle Adjustment 三种手眼求解方式
-- 静止状态下采集图像与机器人位姿，提示过期帧、异常姿态和坐标系错误
-- 显示、复制和导出带 Frame 定义的 4×4 手眼矩阵
+- 支持 Chessboard 和 CharUco 标定板，可采集、恢复、清洗并保存相机内参与手眼样本
+- 相机输入支持 ROS2 Image、CameraInfo 与本地 V4L2 设备
+- 机器人位姿支持 TransformStamped、PoseStamped、TF2 与 JointState + URDF
+- 提供多种手眼求解方法、结果冻结、离线验证、真机几何验证与空间触点检查
+- 支持导入 URDF、Description 及网格，在只读三维查看器中检查模型和坐标系
+- 项目目录分别保存采样与求解结果，未求解时可确认并强制切换项目
+- 空间触点检查会核对实时 RGB 尺寸、冻结尺寸、内参矩阵及畸变参数，分别显示异常原因
+- 可选 RGB-D 预接近功能依赖机器人侧已有的 MoveIt 运动接口，并执行安全边界限制
 
-## 安装和启动
+## 安装
 
-Ubuntu 上准备 Python、Node.js、npm 和桌面环境
+Ubuntu 下安装 Python、Node.js、npm 及桌面环境，使用 ROS2 数据时还需安装对应的 ROS2 运行环境
 
 ```bash
-chmod +x ./install.sh ./launch.sh
+chmod +x ./install.sh ./launch.sh ./build_linux.sh ./start_ubuntu.sh ./uninstall.sh
 
 ./install.sh
 ./launch.sh
 ```
 
-使用 ROS2 数据时，应用必须运行在可访问 ROS2 网络与 Python 消息包的环境中
+指定 ROS2 环境时可使用
 
 ```bash
 ROS_SETUP=/opt/ros/humble/setup.bash ./launch.sh
 ```
 
-已安装 ROS2 时可以让启动脚本自动发现环境
+## 基本流程
 
-## 使用流程
+1. 在连接页指定项目目录，配置相机和机器人输入，搜索并选择实际 ROS2 话题
+2. 连接后检查实时图像、CameraInfo、机械臂基座及末端 Frame
+3. 选择标定板，导入内参或采集内参图像进行求解
+4. 保持标定板固定，改变末端位置和旋转方向，停稳后采集手眼样本
+5. 保存样本，在诊断与求解页面检查数据质量并求解手眼矩阵
+6. 冻结结果，再使用独立样本进行离线或真机几何验证
+7. 如需空间触点检查，先确认工具 Link 原点正确，人工记录参考点后采集视觉测量
 
-1. 在连接页面设置输出目录，在统一机器人接口中选择相机输入与机械臂位姿来源
-2. 点击「搜索话题」，从按消息类型过滤的下拉列表选择 Image、CameraInfo 与机械臂位姿话题
-3. 机械臂位姿优先选择 `TransformStamped`，自动从消息获取基座及末端 Frame，`PoseStamped` 兼容模式下才需填写末端 Frame
-4. 点击「连接机器人」，应用先检查必填信息和话题类型，再同时连接位姿与相机，并在收到图像后开启实时预览
-5. 选择普通棋盘格或 CharUco，并导入 CameraInfo、YAML 或重新标定内参
-6. 保持标定板固定，移动机械臂至不同位姿，每次停稳后采样
-7. 保存训练样本，在「诊断与求解」页面完成数据诊断、样本清洗和矩阵求解
-8. 点击「使用当前求解矩阵」，冻结手眼矩阵和训练棋盘参考
-9. 进入「验证」，导入独立验证样本或连接机械臂采集新验证样本
-10. 生成 `validation_report.yaml`，检查全部样本误差后导出手眼矩阵
+## 项目与数据
 
-## 坐标系约定
+- 每个项目独立存储 `calibration/`、`handeye/` 中的文件
+- 仅采集尚未求解的样本也可以保留，切换项目前正常保存即可
+- 强制切换前必须主动勾选确认，程序将优先保存原项目已有的可恢复样本，再卸载原项目状态
+- 导入保存的 `samples.yaml` 时需保证相机内参、标定板参数及机器人和相机坐标系一致
+- 分辨率改变时不自动缩放保存的内参或放宽空间验证门槛，应恢复原相机模式或重新标定
 
-`PoseStamped.header.frame_id` 是位姿表达的参考 Frame，消息不含末端 Frame，需要用户另外填写
+## 坐标系
 
-`TransformStamped` 提供 `header.frame_id` 与 `child_frame_id`，软件以收到的消息为准且不允许手动覆盖，TF2 通过配置两端 Frame 查询变换
+眼在手上标定输出末端 Frame 到相机光学 Frame 的刚体变换矩阵，使用米作为平移单位
 
-当机器人输入为 `base → end` 且相机固定在末端时，眼在手上的结果为 `end → camera`，矩阵单位为米
+`TransformStamped` 提供基座和末端 Frame，`PoseStamped` 只有参考 Frame，必须额外指定末端 Frame
 
-应用只导出矩阵，不修改机器人 URDF、TF 或控制器配置
+应用不会自动修改 URDF、发布 TF 或代替机器人控制器进行运动规划
 
-## 相机内参
-
-ROS2 CameraInfo 仅支持本应用可处理的针孔相机与兼容的畸变模型，必须与采集图像分辨率一致
-
-图像支持 `bgr8`、`rgb8`、`bgra8`、`rgba8`、`mono8` 和 `8UC1`，RGB-D 相机手眼标定无需强制订阅深度数据
-
-使用不同设备时确认图像和位姿时间基准，静止采样采用接收时间配对与机械臂稳定性检查，不能替代运动中的硬件曝光同步
-
-## 目录说明
-
-- `src/renderer/` — 桌面 GUI
-- `desktop/` — Electron 桌面进程
-- `backend/bridge.py` — GUI 与算法接口
-- `ros_interface.py` — ROS2 机器人位姿和相机输入
-- `calibration_board.py` — 标定板角点与几何关系
-- `calibration_engine.py` — 内参与手眼样本采集
-- `algorithms/` — 标定求解、诊断与精化
-- `validation_engine.py` — 独立离线与真机验证、报告计算
-- `USER_GUIDE.md` — 操作指南
-
-Tomato-Manipulation 的手眼标定节点可发布 `/arm/tool_transform`，输入类型选择 `TransformStamped` 后搜索并选择该话题
-
-## 样本清洗与继续采集
-
-手眼采样页面可导入之前保存的 `samples.yaml`
-
-导入时核对标定板、冻结内参、机械臂坐标系、相机坐标系及样本矩阵，恢复原有质量模式，并允许继续采集
-
-手眼采样页和诊断与求解页都能根据稳定样本 ID 删除异常样本，删除后更新 `samples.yaml` 并使旧求解结果失效
-
-清洗前的文件保留为 `samples.backup.yaml`
-
-极简建议 8 组，标准建议 20 组，严格建议 30 组，达到数量不等于满足旋转激励及求解质量要求
-
-诊断、手眼求解、离线与真机验证、相机内参求解在独立进程运行，可以通过进度弹窗取消，已存在的有效计算结果不会因取消而覆盖
-
-## 独立验证
-
-「诊断与求解」只负责对训练样本诊断、清洗和求解，验证在第五个独立页面完成
-
-求解后点击「使用当前求解矩阵」，应用创建 `validation_reference.yaml`，记录 `tool0 → camera` 等实际 Frame、冻结矩阵、相机内参、棋盘参数、训练样本签名以及由训练数据估计的固定棋盘参考
-
-**离线验证**
-
-- 不需要连接机器人或相机，选择未参与求解的新采集 `samples.yaml`
-- 自动拒绝训练与验证样本重叠、Frame 不一致、内参不一致和棋盘规格不一致
-- 通过固定矩阵和固定参考计算每个样本的平移、旋转和预测角点误差，并保存 `validation_offline_report.yaml`
-
-**真机验证**
-
-- 保持标定板位置不动并连接机械臂和相机
-- 进入「验证 → 真机验证」，实时预览叠加实测角点与固定参考预测角点
-- 人工移动机械臂，停稳后采集验证样本，验证样本保存为 `validation_samples.yaml`
-- 点击「开始验证」，输出 `validation_live_report.yaml`、逐样本误差和趋势图
-
-离线和真机报告分别保存，`validation_report.yaml` 始终指向最近完成的一次验证
-
-两种模式都不重新求解矩阵，也不会发出任何机械臂运动命令
-
-验证参考来自训练数据而非独立测量真值，因此报告只评价手眼几何一致性与投影一致性，不可直接解释为绝对空间定位精度
-
-修改训练样本、求解结果或棋盘参数后，旧冻结参考与验证报告会自动失效
-
-## 机械臂模型与空间定位
-
-机械臂输入可以选择 `TransformStamped`、`PoseStamped`、TF2 或 `JointState + URDF`，前三种直接提供末端位姿，导入 URDF 后可在应用内部推导与末端通过固定关节连接的 `tip` 等工具 Link
-
-`JointState` 必须先导入真实的 URDF，使用关节名称匹配及 URDF 正运动学，不使用自带演示用的机械臂参数，导入 URDF 不会发布 `/tf`
-
-机器人接口可选择 Description 文件夹或 ZIP，也可导入 URDF / Xacro 文件，或读取 ROS2 `/robot_description`
-
-导入前须断开机械臂连接，系统会保存模型及其网格资源的本地副本，基础标定无需导入模型
-
-导入模型后点击「查看三维模型」，可查看 Visual / Collision、Link / Joint 树、关节轴、工具坐标系以及有效求解矩阵对应的相机和历史棋盘位置，支持旋转、缩放、平移和刷新姿态
-
-模型查看器通过 WebGL 在 GPU 上绘制连续网格，参考 SerialArm-Core 的只读模型检查方式，显示 Link 与关节坐标系，不使用逐三角面抽样造成网格缺口；静态几何数据会被缓存
-
-左键拖动旋转模型，拖动方向与模型可见运动方向一致；右键或 Shift + 拖动平移，滚轮缩放，双击恢复合适视角；坐标轴颜色固定为 X 红、Y 绿、Z 蓝，关节轴为橙色；WebGL 不可用时自动进入低精度 Canvas 模式，并在顶部提示
-
-只有完整 JointState 才能正确还原动态整臂姿态，单独的 TransformStamped、PoseStamped 或末端 TF2 不能反推出各关节角，查看器会显示 URDF 零位示意并明确标注
-
-缺少 Mesh 只影响外观显示，不影响已知 Link 变换或基本手眼标定，GLB/OBJ/glTF 网格预览需要安装 trimesh，STL 可以直接加载
-
-验证页面依次提供「离线验证 — 独立样本几何一致性」「真机验证 — 几何一致性」「真机验证 — 手眼伺服定位」
-
-手眼伺服定位目前提供人工触点对照：选择工具 Link 和标定板角点 ID，手动接触停稳后记录基座参考位置，移开机械臂后用 RGB + 棋盘 PnP 重新测量同一角点，结果保存在输出目录 `spatial_contact.yaml` 和 `spatial_validation_report.yaml`
-
-人工触点参考依赖机器人正运动学及工具安装精度，不等于第三方独立真值，自动 RGB-D 闭环伺服仅在界面说明接口要求，尚未启用机器人运动控制
-
-## RGB-D 手眼伺服定位
-
-在「验证 → 真机验证 — 手眼伺服定位 → RGB-D 闭环视觉伺服」使用此功能
-
-运行前需要在「机器人接口」配置 ROS2 彩色 `sensor_msgs/msg/Image`、与之对应的 CameraInfo，以及机械臂末端位姿 `TransformStamped` / TF2 / PoseStamped / JointState+URDF
-
-机器人端还需要完成以下**独立接口要求**，Handeye App **不提供运动规划器或电机驱动**
-
-- 运动 Action 类型为 `moveit_msgs/action/MoveGroup`，默认名称 `/move_action`，在 GUI 中可自定义
-- 机器人端的 MoveIt2 规划组，例如 `arm`，必须包含可规划到用户指定的工具 Link（例如 `tip`）的运动学链
-- 机器人端负责逆运动学、关节限位、碰撞检查、速度限制、轨迹执行、执行反馈、取消与急停
-- 可用且已验证的 URDF / Description，其中工具 Link 的坐标原点必须准确表示实际针尖或其他 TCP
-- 对齐到 RGB 光学坐标系的深度 `sensor_msgs/msg/Image`，其 Frame、分辨率与 RGB 一致，时间戳差不超过 50 ms
-- 深度编码必须是 `16UC1` / `mono16`（毫米）或 `32FC1`（米），并具有与 RGB 对应的相机内参
-
-GUI 操作顺序
-
-1. 完成手眼标定并冻结标定矩阵，连接 ROS2 RGB 和机械臂位姿，导入工具 Description
-2. 切换「RGB-D 闭环视觉伺服」，填写并连接对齐 Depth Image 话题
-3. 填入机器人端 MoveGroup Action 与规划组，保存后点击「检测运动服务」
-4. 选择目标工具 Link，在彩色相机预览中点击目标或拖出一个目标框，检查基座三维坐标
-5. 设置单步上限、预接近安全间距和最多迭代次数，确认现场安全后启动
-6. 系统每次只发送一个受限 MoveGroup 目标，待其成功结束、机械臂停稳，并重新观察目标后才发送下一次
-7. 任何时刻可点击取消；取消是向机器人端请求中止，务必观察真机是否确实停止
-
-安全限制：单步运动为 3～30 mm，迭代次数为 1～20，工具与目标之间始终保留不少于 25 mm 的间距，**不包含自动接触**；本功能适合安全预接近与闭环定位验证，不用于直接撞击或触碰标定板
-
-目标跟踪采用单个用户选择的图像模板及重投影门控，不具备通用物体检测能力；目标纹理不明显、被遮挡、深度不稳定、运动幅度太大或重投影不一致时会停止后续指令，用户需重新选择目标
-
-操作记录输出为 `rgbd_servo_report.yaml`；其中剩余距离来自 RGB-D 观测与机器人正运动学，不是独立测得的 TCP 接触精度
+完整操作见 [USER_GUIDE.md](USER_GUIDE.md)，实现规划见 [docs/plan.md](docs/plan.md)

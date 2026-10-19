@@ -15,7 +15,7 @@ import yaml
 
 
 def find_chessboard(gray, pattern_size):
-    """检测棋盘格角点, 兼容新旧 OpenCV"""
+    """检测棋盘格角点, 兼容 OpenCV 角点接口"""
     if hasattr(cv2, "findChessboardCornersSB"):
         found, corners = cv2.findChessboardCornersSB(
             gray,
@@ -37,7 +37,7 @@ def find_chessboard(gray, pattern_size):
 def corner_subpix_win(gray, pattern_size, corners=None):
     """返回不会跨到相邻角点的 ``cornerSubPix`` 半窗口
 
-    ``winSize=(w, w)`` 表示角点两侧各 ``w`` 像素；旧实现对
+    ``winSize=(w, w)`` 表示角点两侧各 ``w`` 像素；此前实现在
     640x480 / 11x8 棋盘返回 11，实际搜索区域达 23x23 px；当格宽只有
     14~20 px 时会把角点吸到相邻交点
     """

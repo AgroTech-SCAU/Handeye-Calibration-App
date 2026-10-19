@@ -139,7 +139,7 @@ class RosInterface:
                     selected_values = tuple(value_by_name[name] for name in joint_names)
                 else:
                     # Preserve the complete name-to-position mapping.  Never
-                    # infer URDF joint identity from array position or DOF.
+                    # infer URDF joint identity from array position or DOF
                     if not available_names or len(available_names) != len(available_values):
                         raise ValueError('JointState 必须提供完整且与 position 对应的关节名称')
                     if len(set(available_names)) != len(available_names):

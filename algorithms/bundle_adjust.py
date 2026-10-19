@@ -301,7 +301,7 @@ def run_bundle_adjustment(
     if verbose:
         print(f"  🔍 初始重投影 RMS: {rms0_px:.4f} px")
 
-    # 初始几何一致性 (用旧的 evaluate)
+    # 初始几何一致性 (使用现有的 evaluate)
     from solve import evaluate
 
     ev0 = evaluate(

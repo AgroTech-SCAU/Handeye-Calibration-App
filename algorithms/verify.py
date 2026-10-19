@@ -41,7 +41,7 @@ def load_result(path):
     """加载 samples_result.yaml 中的手眼矩阵.
 
     新版 solve.py 直接输出 ^gripper T_camera
-    旧结果没有 stored_transform_convention 字段，按历史格式取逆兼容
+    缺少 stored_transform_convention 字段时使用兼容变换约定
     """
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)

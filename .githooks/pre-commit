@@ -15,7 +15,7 @@ if [ "$branch" = "main" ]; then
 
 然后再 Commit
 
-完整说明：.github/CONTRIBUTING.md
+参见 README.md 中的项目说明
 EOF
   exit 1
 fi

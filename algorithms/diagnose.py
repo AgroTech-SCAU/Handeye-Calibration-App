@@ -81,8 +81,8 @@ def diagnose(samples_path):
     # square_size_mm 优先从 samples.yaml 取 (采集时实际使用的值),
     # 其次从 camera_intrinsics.yaml 取 (标定时使用的值)
     sq_mm = data.get("square_size_mm", None)
-    # 优先使用 samples.yaml 记录的采集内参；GUI 可把输出放在独立目录，
-    # 因此不能总是读取本脚本目录中的旧 camera_intrinsics.yaml
+    # 优先使用 samples.yaml 记录的采集内参；GUI 可把输出放在独立目录
+    # 因此不能总是读取本脚本目录中的非当前项目的 camera_intrinsics.yaml
     intrinsics_name = data.get("intrinsics_file", "camera_intrinsics.yaml")
     intrinsics_file = (
         intrinsics_name
@@ -140,7 +140,7 @@ def diagnose(samples_path):
     # ── 5. 一致性预检 (不依赖求解结果) ──
     print(f"\n  ── ⑤ 位姿一致性预检 ──")
     # 对于 eye_in_hand: base_to_target = b2g_i * X * t2c_i = constant
-    # 如果 b2g_i^{-1} * b2g_j 和 t2c_i * t2c_j^{-1} 有相同的旋转角，
+    # 如果 b2g_i^{-1} * b2g_j 和 t2c_i * t2c_j^{-1} 有相同的旋转角
     # 说明数据内部一致 (Schmidt 1991 定理)
     from fk_utils import invert_transform
 

@@ -649,7 +649,7 @@ def _compute_all_pair_motions(
     for i in range(n):
         Bi_inv = invert_transform(B_list[i])
         for j in range(i + 1, n):
-            # 由固定参考位姿关系推导相对运动：
+            # 由固定参考位姿关系推导相对运动
             # eye-in-hand: inv(A_j) A_i X = X B_j inv(B_i)
             # eye-to-hand: A_j inv(A_i) X = X B_j inv(B_i)
             if mode == "eye_in_hand":
@@ -1276,7 +1276,7 @@ def solve(samples_path, simple=False, use_ba=False):
         print("     - gripper_in_base 和 target_to_camera 未正确配对")
         stale_result = os.path.splitext(samples_path)[0] + "_result.yaml"
         if os.path.exists(stale_result):
-            print(f"   ⚠ 旧结果仍在 {stale_result}，本次并未更新，禁止继续部署旧文件")
+            print(f"   ⚠ 原有结果仍在 {stale_result}，本次并未更新，禁止继续部署该文件")
         return
 
     X_final, inlier_indices_local, removed_local, metrics = result
@@ -1294,7 +1294,7 @@ def solve(samples_path, simple=False, use_ba=False):
         print(f"\n  ✅ 无异常值, 全部 {n} 组参与求解")
 
     # ── 显示结果 ──
-    # OpenCV/本求解器的 X = ^gripper T_camera：相机在末端中的位姿，
+    # OpenCV/本求解器的 X = ^gripper T_camera：相机在末端中的位姿
     # 可直接作为 ROS parent=tool0, child=camera_optical_frame 的静态 TF
     X_display = X_final
     t = X_display[:3, 3]

@@ -226,7 +226,7 @@ async function transitionToPage(page){
 function navigate(page){closeAppearanceMenu();void transitionToPage(page)}
 
 function pageHead(kicker,title,desc,actions=''){return `<div class="page-head"><div class="page-head-main"><div class="page-kicker">${kicker}</div><h2 class="page-title">${title}</h2><p class="page-description">${desc}</p></div>${actions?`<div class="page-actions">${actions}</div>`:''}</div>`}
-// Card identities must not depend on translated Chinese/English display titles.
+// Card identities must not depend on translated Chinese/English display titles
 const CARD_TITLE_KEYS = [
   'connect.projectSettings', 'connect.robotInterface',
   'intrinsics.boardTitle', 'intrinsics.captureTitle',
@@ -254,7 +254,7 @@ function setCardExpanded(key,expanded){
 }
 function cardToggle(key,expanded){
   // This button is the only interactive control in its heading, so clicks never bubble
-  // to a second handler or operate on another card found by a document query.
+  // to a second handler or operate on another card found by a document query
   const action=expanded?(state.language==='zh-CN'?'收起':'Collapse'):(state.language==='zh-CN'?'展开':'Expand')
   return `data-card-toggle="${escapeHtml(key)}" aria-expanded="${expanded}" aria-label="${action}" title="${action}"`
 }
@@ -525,11 +525,11 @@ function renderValidation(){
   ${card(t('validation.reportTitle'),t('validation.reportDesc'),'check',validationReport(report))}</div>`
 }
 
-// Keep settings cards in independent columns so a collapsed card never stretches to match an expanded sibling.
-function renderSettings(){const rt=state.runtime||{};const installed=Boolean(rt.runtimeInstalled);return `<div class="page">${pageHead(t('settings.kicker'),t('settings.title'),t('settings.desc'))}<div class="settings-layout"><div class="settings-column">${card(t('settings.appearance'),t('settings.appearanceDesc'),'sun',`<div class="field"><label>${t('settings.theme')}</label><div class="theme-selector" id="theme-segment">${themeSettingsChoice('system',t('appearance.system'))}${themeSettingsChoice('dark',t('appearance.dark'))}${themeSettingsChoice('light',t('appearance.light'))}</div></div>`)}${card(t('settings.runtime'),t('settings.runtimeDesc'),'terminal',`<div class="runtime-health"><div>${dot(installed?'success':'warning')}<b id="runtime-health-label">${installed?t('runtime.ready'):t('runtime.notInstalled')}</b></div><span id="runtime-health-path">${escapeHtml(rt.runtimePython||'~/.local/share/handeye-calibration/.venv/bin/python')}</span></div><div class="pose-box" id="runtime-info-box" style="margin-top:11px">Ubuntu : ${escapeHtml(rt.ubuntu||'unknown')}
+// Keep settings cards in independent columns so a collapsed card never stretches to match an expanded sibling
+function renderSettings(){const rt=state.runtime||{};const installed=Boolean(rt.runtimeInstalled);return `<div class="page">${pageHead(t('settings.kicker'),t('settings.title'),t('settings.desc'))}<div class="settings-layout"><div class="settings-column">${card(t('settings.appearance'),t('settings.appearanceDesc'),'sun',`<div class="field"><label>${t('settings.theme')}</label><div class="theme-selector" id="theme-segment">${themeSettingsChoice('system',t('appearance.system'))}${themeSettingsChoice('dark',t('appearance.dark'))}${themeSettingsChoice('light',t('appearance.light'))}</div></div>`)}${card(t('settings.runtime'),t('settings.runtimeDesc'),'terminal',`<div class="runtime-health"><div>${dot(installed?'success':'warning')}<b id="runtime-health-label">${installed?t('runtime.ready'):t('runtime.notInstalled')}</b></div><span id="runtime-health-path">${escapeHtml(rt.runtimePython||'~/.local/share/handeye-calibration/.venv/bin/python')}</span></div><div class="pose-box" id="runtime-info-box" style="margin-top:11px">系统   : Linux
 ROS    : ${escapeHtml(rt.rosDistro||'not detected')}
 Setup  : ${escapeHtml(rt.rosSetup||'not detected')}
-Python : ${escapeHtml(rt.python||'unknown')}
+运行环境 : ${installed?t('runtime.ready'):t('runtime.notInstalled')}
 Interface: HandEye</div><div class="help" style="margin-top:10px">${t('runtime.help')}</div><div class="mini-log ${state.runtimeInstallLog?'':'hidden'}" id="runtime-install-log">${escapeHtml(state.runtimeInstallLog.slice(-5000))}</div>`,`<div class="actions"><button class="btn primary" id="install-runtime" ${state.runtimeInstallState==='running'?'disabled':''}>${icon('play')}<span id="install-runtime-label">${state.runtimeInstallState==='running'?t('runtime.installing'):installed?t('runtime.repair'):t('runtime.install')}</span></button><button class="btn" id="restart-backend">${icon('terminal')}${t('runtime.restart')}</button></div>`,true)}</div><div class="settings-column">${card(t('settings.language'),t('settings.languageDesc'),'info',`<div class="field"><label>${t('settings.languageLabel')}</label>${segmentedControl('language-selector',state.language,[['zh-CN',t('settings.zhCN')],['en',t('settings.english')]],'amber')}</div>`)}</div></div>`}
 function renderAbout(){return `<div class="page">${pageHead(t('about.kicker'),t('about.title'),t('about.desc'))}<div class="grid two">${card(t('about.experience'),t('about.experienceDesc'),'info',`<div class="callout">${icon('info')}<div><b>${t('about.focusTitle')}</b><br>${t('about.focusBody')}</div></div>`)}${card(t('about.core'),t('about.coreDesc'),'check',`<div class="stack"><div class="runtime-line">${dot('success')} ${t('about.protected',{name:'algorithm_runner.py'})}</div><div class="runtime-line">${dot('success')} ${t('about.protected',{name:'calibration_engine.py'})}</div><div class="runtime-line">${dot('success')} ${t('about.protected',{name:'ros_interface.py'})}</div><div class="runtime-line">${dot('success')} ${t('about.protected',{name:'algorithms/*'})}</div></div>`)}</div></div>`}
 
@@ -829,12 +829,12 @@ function bindCollapsibleCards(){
     const label=expanded?(state.language==='zh-CN'?'收起':'Collapse'):(state.language==='zh-CN'?'展开':'Expand')
     toggle.setAttribute('aria-label',label)
     toggle.title=label
-    // Keep the DOM intact so forms and controls do not lose their unsaved values.
+    // Keep the DOM intact so forms and controls do not lose their unsaved values
     card.querySelectorAll(':scope > .card-body,:scope > .card-footer,:scope > .preview-surface').forEach(content=>{
       content.hidden=!expanded
     })
   }))
-  // The original board editor uses native details. Persist its expanded state too.
+  // The original board editor uses native details. Persist its expanded state too
   $$('.board-inline-editor').forEach(details=>{
     const key=cardKey('board-editor','board-editor')
     details.open=isCardExpanded(key)
@@ -1212,10 +1212,10 @@ function updatePreviewFrame(data){
 }
 
 function updatePoseView(data){state.data.ros={...(state.data.ros||{}),running:true,pose:data};const pose=$('#pose-live');if(pose)pose.textContent=poseText();if(state.page==='connect'){applyTopicDetails(state.data.config.ros_input_type==='transform'?'transform':'pose',{frame_id:data.frame_id,child_frame_id:data.child_frame_id})}updateShell()}
-function updateRuntimeView(){const rt=state.runtime||{};const installed=Boolean(rt.runtimeInstalled);const label=$('#runtime-health-label');if(label)label.textContent=installed?t('runtime.ready'):t('runtime.notInstalled');const pathEl=$('#runtime-health-path');if(pathEl)pathEl.textContent=rt.runtimePython||'~/.local/share/handeye-calibration/.venv/bin/python';const info=$('#runtime-info-box');if(info)info.textContent=`Ubuntu : ${rt.ubuntu||t('common.unknown')}
+function updateRuntimeView(){const rt=state.runtime||{};const installed=Boolean(rt.runtimeInstalled);const label=$('#runtime-health-label');if(label)label.textContent=installed?t('runtime.ready'):t('runtime.notInstalled');const pathEl=$('#runtime-health-path');if(pathEl)pathEl.textContent=rt.runtimePython||'~/.local/share/handeye-calibration/.venv/bin/python';const info=$('#runtime-info-box');if(info)info.textContent=`系统   : Linux
 ROS    : ${rt.rosDistro||t('common.notDetected')}
 Setup  : ${rt.rosSetup||t('common.notDetected')}
-Python : ${rt.python||t('common.unknown')}
+运行环境 : ${installed?t('runtime.ready'):t('runtime.notInstalled')}
 Interface: HandEye`;const log=$('#runtime-install-log');if(log){log.textContent=state.runtimeInstallLog.slice(-5000);log.classList.toggle('hidden',!state.runtimeInstallLog)}const install=$('#install-runtime');if(install)install.disabled=state.runtimeInstallState==='running';const installLabel=$('#install-runtime-label');if(installLabel)installLabel.textContent=state.runtimeInstallState==='running'?t('runtime.installing'):installed?t('runtime.repair'):t('runtime.install')}
 function appendBackendLog(text){state.logs+=text||'';const log=$('#log-box');if(log){log.textContent=state.logs;log.scrollTop=log.scrollHeight}}
 async function refreshState(){if(!api)return;try{state.data=await api.request('get_state');updateShell();renderPage(false)}catch(e){state.backend='error';updateShell()}}

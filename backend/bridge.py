@@ -2070,7 +2070,7 @@ class Bridge:
     def run_tool(self, params: dict[str, Any]) -> dict[str, Any]:
         name = str(params.get("name", "solve"))
         if name not in ('diagnose','solve'):
-            raise ValueError('独立验证请使用验证页面，不允许旧的训练样本内验证')
+            raise ValueError('独立验证请使用验证页面，不允许在训练样本内进行独立验证')
         mode = str(params.get("solve_mode", "robust"))
         _, _, samples = self._paths()
         if not self._saved_samples_match_board(samples):
@@ -2113,7 +2113,7 @@ class Bridge:
         if matrix.shape != (4,4) or not np.isfinite(matrix).all() or not parent or not child:
             raise ValueError("手眼结果缺少有效矩阵或坐标系")
         if str(parent).startswith('UNRESOLVED_') or str(child).startswith('UNRESOLVED_'):
-            raise ValueError("历史样本缺少坐标系元数据，请确认 Frame 后重新采集")
+            raise ValueError("保存的样本缺少坐标系元数据，请确认 Frame 后重新采集")
         if not np.allclose(matrix[3], [0,0,0,1]):
             raise ValueError("手眼矩阵最后一行无效")
         export = dict(parent_frame=parent, child_frame=child,
@@ -2178,7 +2178,7 @@ class Bridge:
             raise ValueError('实时 RGB 分辨率与求解时相机内参不一致')
         info=self.camera_info
         if info is None:
-            raise ValueError('RGB-D 视觉伺服必须订阅 ROS2 CameraInfo，不能只凭历史内参文件推断当前光学模型')
+            raise ValueError('RGB-D 视觉伺服必须订阅 ROS2 CameraInfo，不能只凭保存的内参文件推断当前光学模型')
         if info.get('frame_id')!=rgb_frame or [info.get('image_width'),info.get('image_height')]!=size:
             raise ValueError('CameraInfo 的光学 Frame 或图像尺寸与实时 RGB 不匹配')
         live_k=np.asarray(info['camera_matrix']['data'],dtype=float).reshape(3,3)
@@ -2396,7 +2396,7 @@ class Bridge:
 
     def dispatch(self, method: str, params: dict[str, Any]) -> Any:
         if method == "ping":
-            return {"pong": True, "python": sys.version.split()[0], "mock": self.mock}
+            return {"pong": True, "mock": self.mock}
         if method == "get_state":
             return self._state()
         if method == "set_config":
