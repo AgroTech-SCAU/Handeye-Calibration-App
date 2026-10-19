@@ -589,7 +589,6 @@ async function commitOutputDirectory(selected,force=false){
     if(currentInput)currentInput.value=path
     const meta=$('#connect-output-meta')
     if(meta)meta.textContent=path
-    toast(t('toast.settingsSaved'),path,'success')
     renderPage(false)
     return true
   }catch(_error){
@@ -616,23 +615,112 @@ function configFromForm(scope='connect'){
 function busyOverlay(label,cancellable=true){
   let node=document.getElementById('work-modal')
   if(!node){node=document.createElement('div');node.id='work-modal';node.className='work-modal-backdrop';document.body.appendChild(node)}
-  node.innerHTML=`<div class="work-modal-card" role="dialog" aria-modal="true" aria-live="polite"><div class="work-loader"></div><h3>${escapeHtml(label)}</h3><p id="work-detail">${t('work.running')}</p><button class="btn" id="cancel-work" ${cancellable?'':'disabled'}>${t('work.cancel')}</button></div>`
+  node.innerHTML=`<div class="work-modal-card" role="dialog" aria-modal="true" aria-live="polite" tabindex="-1"><div class="work-loader"></div><h3>${escapeHtml(label)}</h3><p id="work-detail">${t('work.running')}</p>${cancellable?`<button class="btn" id="cancel-work">${t('work.cancel')}</button>`:''}</div>`
   node.style.display='flex'
+  $('#app')?.setAttribute('inert','')
+  node.querySelector('[role="dialog"]')?.focus()
   return node
 }
-function hideBusy(){const node=document.getElementById('work-modal');if(node)node.style.display='none'}
-async function busyRequest(method,params,label){
-  let finished=false,ignored=false
+function hideBusy(){
+  const node=document.getElementById('work-modal')
+  if(node){node.style.display='none';node.innerHTML=''}
+  $('#app')?.removeAttribute('inert')
+}
+
+// File operations retain a visible outcome and path until the user acknowledges it
+const FILE_OPERATIONS={
+  switch_project:'work.switchingProject',
+  update_board:'work.savingSettings',
+  save_samples:'work.savingSamples',
+  import_samples:'work.importingSamples',
+  delete_samples:'work.deletingSamples',
+  clear_samples:'work.clearingSamples',
+  clear_intrinsic:'work.clearingIntrinsics',
+  clear_validation:'work.clearingValidation',
+  clear_spatial:'work.clearingContact',
+  import_camera_info:'work.savingIntrinsics',
+  import_intrinsics:'work.savingIntrinsics',
+  export_matrix:'work.exportingMatrix',
+  freeze_validation:'work.freezingValidation',
+  import_validation:'work.importingValidation',
+  export_validation:'work.exportingValidation',
+  import_robot_model:'work.importingModel',
+  import_ros_model:'work.importingModel',
+  clear_robot_model:'work.clearingModel',
+  set_servo_motion_config:'work.savingSettings',
+  record_spatial_contact:'work.savingContact'
+}
+const WAIT_OPERATIONS={
+  set_config:'work.savingSettings',
+  connect_robot:'action.connectRobot',
+  capture_intrinsic:'intrinsics.capture',
+  capture_handeye:'handeye.capture',
+  capture_validation:'validation.captured',
+  measure_spatial_target:'spatial.measure'
+}
+let activeOperation=false
+let activeWaitOperation=false
+async function waitingRequest(method,params,okMessage){
+  if(activeOperation||activeWaitOperation||state.busyJob||document.getElementById('work-modal')?.style.display==='flex'){
+    toast(t('work.running'),'','warning')
+    throw new Error(t('work.running'))
+  }
+  activeWaitOperation=true
+  let shown=false
   const timer=setTimeout(()=>{
-    if(finished)return
-    busyOverlay(label,false)
-    const detail=document.getElementById('work-detail')
-    if(detail)detail.textContent=t('work.waiting')
-  },450)
-  try{return await request(method,params)}finally{finished=true;clearTimeout(timer);hideBusy()}
+    if(!activeWaitOperation)return
+    busyOverlay(t(WAIT_OPERATIONS[method]),false)
+    shown=true
+  },250)
+  try{
+    const result=await api.request(method,params)
+    if(okMessage)toast(okMessage,'','success')
+    return result
+  }catch(error){
+    toast(t('toast.operationFailed'),error?.message||String(error),'danger')
+    throw error
+  }finally{
+    activeWaitOperation=false
+    clearTimeout(timer)
+    if(shown)hideBusy()
+  }
+}
+function showOperationOutcome(status,label,detail=''){
+  const host=document.getElementById('work-modal')
+  if(!host)return
+  const heading=status==='success'?t('work.completed'):t('work.failed')
+  const detailHtml=detail?`<p class="work-result-detail">${escapeHtml(detail)}</p>`:''
+  host.innerHTML=`<div class="work-modal-card" role="alertdialog" aria-modal="true" aria-labelledby="work-result-heading"><div class="work-result-icon ${status}">${icon(status==='success'?'check':'alert')}</div><h3 id="work-result-heading">${escapeHtml(heading)}</h3><p class="work-result-label">${escapeHtml(label)}</p>${detailHtml}<button type="button" class="btn primary" id="work-result-close">${t('work.acknowledge')}</button></div>`
+  const dismiss=()=>hideBusy()
+  $('#work-result-close')?.addEventListener('click',dismiss,{once:true})
+  $('#work-result-close')?.focus()
+}
+async function fileRequest(method,params,label){
+  if(activeOperation||activeWaitOperation||state.busyJob||document.getElementById('work-modal')?.style.display==='flex'){
+    toast(t('work.running'),'','warning')
+    throw new Error(t('work.running'))
+  }
+  activeOperation=true
+  busyOverlay(label,false)
+  const detail=$('#work-detail')
+  if(detail)detail.textContent=t('work.waiting')
+  try{
+    const result=await api.request(method,params)
+    const path=result?.path||result?.report_path||(method==='switch_project'?result?.config?.output_dir:'')||''
+    showOperationOutcome('success',label,path)
+    return result
+  }catch(error){
+    showOperationOutcome('error',label,error?.message||String(error))
+    throw error
+  }finally{
+    activeOperation=false
+  }
+}
+async function busyRequest(method,params,label){
+  return request(method,params)
 }
 async function launchCalculation(name,params,label){
-  if(state.busyJob){toast(t('work.running'),'','warning');return}
+  if(state.busyJob||activeOperation||activeWaitOperation||document.getElementById('work-modal')?.style.display==='flex'){toast(t('work.running'),'','warning');return}
   const job={id:null,name,label,cancelRequested:false,done:false}
   state.busyJob=job
   const overlay=busyOverlay(label,true)
@@ -666,7 +754,16 @@ function completeCalculation(data){
 }
 async function request(method,params={},okMessage=''){
   if(!api){toast(t('toast.backendUnavailable'),t('toast.useElectron'),'danger');throw new Error('backend unavailable')}
-  try{const r=await api.request(method,params);if(okMessage)toast(okMessage,'','success');return r}catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger');throw e}
+  if(FILE_OPERATIONS[method])return fileRequest(method,params,t(FILE_OPERATIONS[method]))
+  if(WAIT_OPERATIONS[method])return waitingRequest(method,params,okMessage)
+  try{
+    const r=await api.request(method,params)
+    if(okMessage)toast(okMessage,'','success')
+    return r
+  }catch(error){
+    toast(t('toast.operationFailed'),error?.message||String(error),'danger')
+    throw error
+  }
 }
 async function saveConfig(scope='connect'){const r=await request('set_config',configFromForm(scope),t('toast.settingsSaved'));state.data=r;renderPage()}
 async function updateBoardSettings(){
@@ -687,7 +784,7 @@ async function updateBoardSettings(){
     state.intrinsicResult=null
     state.solveResult=null
     renderPage(false)
-  }finally{if($('#save-board'))$('#save-board').disabled=false}
+  }catch(_error){}finally{if($('#save-board'))$('#save-board').disabled=false}
 }
 
 function syncSegmentIndicator(el,animate=true){
@@ -855,7 +952,7 @@ function bindPage(){
   bindSegment('validation-mode','validationMode',()=>{if(state.data.servo?.busy&&state.validationMode!=='spatial')void api?.request('cancel_servo',{});void api?.request('set_validation_overlay',{enabled:state.validationMode==='live',spatial:state.validationMode==='spatial'});renderPage(false)});
   bindSegment('intrinsic-quality','intrinsicQuality',updateIntrinsicQualityView);bindSegment('handeye-quality','handeyeQuality',updateHandeyeQualityView);bindSegment('sample-mode','sampleMode',updateSampleModeView);bindSegment('solve-mode','solveMode')
   $('#servo-interface-save')?.addEventListener('click',async()=>{
-    try{const r=await request('set_servo_motion_config',{action:$('#interface-motion-action').value,group:$('#interface-motion-group').value});await refreshState();toast(t('servo.saved'),'','success')}
+    try{const r=await request('set_servo_motion_config',{action:$('#interface-motion-action').value,group:$('#interface-motion-group').value});await refreshState()}
     catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
   })
   $('#servo-interface-check')?.addEventListener('click',async()=>{
@@ -872,7 +969,7 @@ function bindPage(){
     catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
   })
   $('#servo-save-motion')?.addEventListener('click',async()=>{
-    try{await request('set_servo_motion_config',{action:$('#servo-motion-action').value,group:$('#servo-motion-group').value});await refreshState();toast(t('servo.saved'),'','success')}
+    try{await request('set_servo_motion_config',{action:$('#servo-motion-action').value,group:$('#servo-motion-group').value});await refreshState()}
     catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
   })
   const servoSurface=$('#preview-surface')
@@ -947,7 +1044,7 @@ function bindPage(){
   $('#spatial-contact')?.addEventListener('click',async()=>{
     if(!window.confirm(t('spatial.confirmContact')))return
     const link=$('#spatial-tool-link').value,corner_id=Number($('#spatial-corner-id').value)
-    try{await request('record_spatial_contact',{link,corner_id},t('spatial.recordContact'));state.spatialLink=link;state.spatialCorner=corner_id;await refreshState();toast(t('spatial.recordContact'),t('spatial.recorded'),'success')}
+    try{await request('record_spatial_contact',{link,corner_id},t('spatial.recordContact'));state.spatialLink=link;state.spatialCorner=corner_id;await refreshState()}
     catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
   })
   $('#spatial-camera-check')?.addEventListener('click',async()=>{
@@ -972,7 +1069,7 @@ function bindPage(){
   })
   $('#spatial-clear')?.addEventListener('click',async()=>{
     if(!window.confirm(t('spatial.confirmClear')))return
-    await request('clear_spatial',{});await refreshState()
+    try{await request('clear_spatial');await refreshState()}catch(_error){}
   })
   $('#camera-source')?.addEventListener('change',e=>{const ros=e.target.value==='ros';$('#camera-ros-fields').style.display=ros?'grid':'none';$('#camera-local-fields').style.display=ros?'none':'grid'})
   $('#ros-input-type')?.addEventListener('change',e=>{
@@ -1016,7 +1113,7 @@ function bindPage(){
       const path=await api?.selectRobotModel?.()
       if(!path)return
       await request('import_robot_model',{path},t('guide.importModel'))
-      await refreshState();toast(t('guide.modelTitle'),t('guide.imported'),'success')
+      await refreshState()
     }catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
   })
   $('#import-description-folder')?.addEventListener('click',async()=>{
@@ -1024,7 +1121,7 @@ function bindPage(){
       const path=await api?.selectRobotDescriptionFolder?.()
       if(!path)return
       await request('import_robot_model',{path},t('guide.importModel'))
-      await refreshState();toast(t('guide.modelTitle'),t('guide.imported'),'success')
+      await refreshState()
     }catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
   })
   $('#open-model-viewer')?.addEventListener('click',async()=>{
@@ -1033,12 +1130,12 @@ function bindPage(){
     }catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
   })
   $('#load-robot-description')?.addEventListener('click',async()=>{
-    try{await request('import_ros_model',{},t('guide.rosModel'));await refreshState();toast(t('guide.modelTitle'),t('guide.imported'),'success')}
+    try{await request('import_ros_model',{},t('guide.rosModel'));await refreshState()}
     catch(e){toast(t('toast.operationFailed'),e.message||String(e),'danger')}
   })
   $('#clear-robot-model')?.addEventListener('click',async()=>{
     if(!window.confirm(t('guide.confirmClear')))return
-    await request('clear_robot_model',{},t('guide.clearModel'));await refreshState()
+    try{await request('clear_robot_model');await refreshState()}catch(_error){}
   })
   $('#force-project-checkbox')?.addEventListener('change',event=>{
     state.forceProjectSwitch=event.target.checked
@@ -1083,20 +1180,20 @@ function bindPage(){
     state.preview=''
     await refreshState()
   })
-  $('#import-camera-info')?.addEventListener('click',async()=>{const r=await request('import_camera_info',{},t('toast.settingsSaved'));toast(t('intrinsics.saved'),r.path,'success');await refreshState()})
-  $('#import-intrinsics')?.addEventListener('click',async()=>{const path=await api?.selectIntrinsics?.();if(!path)return;const r=await request('import_intrinsics',{path},t('toast.settingsSaved'));toast(t('intrinsics.saved'),r.path,'success');await refreshState()})
+  $('#import-camera-info')?.addEventListener('click',async()=>{try{await request('import_camera_info');await refreshState()}catch(_error){}})
+  $('#import-intrinsics')?.addEventListener('click',async()=>{try{const path=await api?.selectIntrinsics?.();if(!path)return;await request('import_intrinsics',{path});await refreshState()}catch(_error){}})
   $('#copy-matrix')?.addEventListener('click',async()=>{const r=state.solveResult;if(!r)return;const content=`${r.parent_frame} -> ${r.child_frame}\n${r.transform_matrix.map(row=>row.map(v=>Number(v).toFixed(8)).join('  ')).join('\n')}`;await navigator.clipboard.writeText(content);toast(t('action.copyMatrix'),'','success')})
-  $('#export-matrix')?.addEventListener('click',async()=>{const r=await request('export_matrix',{},t('action.exportMatrix'));toast(t('toast.saveComplete'),r.path,'success')})
+  $('#export-matrix')?.addEventListener('click',async()=>{try{await request('export_matrix')}catch(_error){}})
   $('#save-board')?.addEventListener('click',updateBoardSettings)
   $('#capture-intrinsic')?.addEventListener('click',async()=>{const r=await request('capture_intrinsic',{quality_mode:state.intrinsicQuality},t('toast.intrinsicCaptured'));toast(t('toast.sampleQuality'),`Sharpness ${n(r.sharpness,0)} · Coverage ${n(r.board_coverage_percent,1)}%`,'success');await refreshState()})
   $('#solve-intrinsic')?.addEventListener('click',async()=>{await launchCalculation('intrinsic',{quality_mode:state.intrinsicQuality},t('intrinsics.solveSave'))})
-  $('#clear-intrinsic')?.addEventListener('click',async()=>{await request('clear_intrinsic',{},t('toast.intrinsicCleared'));state.intrinsicResult=null;await refreshState()})
+  $('#clear-intrinsic')?.addEventListener('click',async()=>{try{await request('clear_intrinsic');state.intrinsicResult=null;await refreshState()}catch(_error){}})
   $('#go-handeye')?.addEventListener('click',()=>navigate('handeye'));$('#go-solve')?.addEventListener('click',()=>navigate('solve'))
   $('#manual-type')?.addEventListener('change',e=>{state.manualType=e.target.value;refreshManualFields()});$('#angle-unit')?.addEventListener('change',e=>{state.angleUnit=e.target.value})
   $('#capture-handeye')?.addEventListener('click',async()=>{const params={mode:state.sampleMode,quality_mode:state.handeyeQuality};if(state.sampleMode==='manual'){params.manual_type=state.manualType;params.angle_unit=state.angleUnit;params.values=$$('[id^="manual-"]').map(e=>Number(e.value))}const r=await request('capture_handeye',params,t('toast.handeyeCaptured'));toast(t('toast.sampleQuality'),`Reproj ${n(r.reprojection_error_px,3)} px · ${n(r.pixels_per_square,1)} px/square`,'success');await refreshState()})
   $$('.sample-check').forEach(el=>el.addEventListener('change',()=>{const id=Number(el.value);if(el.checked)state.selectedSampleIds.add(id);else state.selectedSampleIds.delete(id);const button=$('#delete-selected-samples');if(button)button.disabled=!state.selectedSampleIds.size}))
   $('#select-all-samples')?.addEventListener('click',()=>{const checkboxes=$$('.sample-check');const all=checkboxes.every(el=>el.checked);state.selectedSampleIds.clear();checkboxes.forEach(el=>{el.checked=!all;if(!all)state.selectedSampleIds.add(Number(el.value))});const button=$('#delete-selected-samples');if(button)button.disabled=!state.selectedSampleIds.size})
-  $('#delete-selected-samples')?.addEventListener('click',async()=>{const ids=[...state.selectedSampleIds].sort((a,b)=>a-b);if(!ids.length)return;if(!window.confirm(t('samples.confirmDelete',{ids:ids.join(', ')})))return;await busyRequest('delete_samples',{ids},t('samples.deleting'));state.selectedSampleIds.clear();state.solveResult=null;state.logs='';await refreshState()})
+  $('#delete-selected-samples')?.addEventListener('click',async()=>{const ids=[...state.selectedSampleIds].sort((a,b)=>a-b);if(!ids.length)return;if(!window.confirm(t('samples.confirmDelete',{ids:ids.join(', ')})))return;try{await busyRequest('delete_samples',{ids},t('samples.deleting'));state.selectedSampleIds.clear();state.solveResult=null;state.logs='';await refreshState()}catch(_error){}})
   $('#import-samples')?.addEventListener('click',async()=>{
     let path
     try {
@@ -1120,8 +1217,8 @@ function bindPage(){
     state.logs=''
     await refreshState()
   })
-  $('#save-samples')?.addEventListener('click',async()=>{const r=await request('save_samples',{},t('toast.samplesSaved'));toast(t('toast.saveComplete'),r.path,'success');await refreshState()})
-  $('#clear-samples')?.addEventListener('click',async()=>{if((state.data.handeye?.count||0)&&!window.confirm(t('samples.confirmClear')))return;await request('clear_samples',{},t('toast.samplesCleared'));state.selectedSampleIds.clear();state.solveResult=null;state.logs='';await refreshState()})
+  $('#save-samples')?.addEventListener('click',async()=>{try{await request('save_samples');await refreshState()}catch(_error){}})
+  $('#clear-samples')?.addEventListener('click',async()=>{if((state.data.handeye?.count||0)&&!window.confirm(t('samples.confirmClear')))return;try{await request('clear_samples');state.selectedSampleIds.clear();state.solveResult=null;state.logs='';await refreshState()}catch(_error){}})
   for(const [id,name,labelKey] of [['run-diagnose','diagnose','action.diagnose'],['run-solve','solve','action.solve']]) $('#'+id)?.addEventListener('click',async()=>{
     if(name==='solve'){state.solveResult=null;renderPage(false)}
     await launchCalculation(name,{solve_mode:state.solveMode},t(labelKey))
@@ -1151,7 +1248,7 @@ function bindPage(){
     await launchCalculation(state.validationMode==='offline'?'validate_offline':'validate_live',{thresholds:limits},t('validation.running'))
   })
   $('#validation-export')?.addEventListener('click',async()=>{
-    try{const r=await request('export_validation',{mode:state.validationMode},t('validation.exported'));toast(t('validation.reportPath'),r.path,'success')}catch(_error){}
+    try{await request('export_validation',{mode:state.validationMode})}catch(_error){}
   })
   $('#install-runtime')?.addEventListener('click',async()=>{if(!api?.runtimeInstall)return;state.runtimeInstallState='running';state.runtimeInstallLog='';renderPage();try{await api.runtimeInstall();state.runtimeInstallState='done';state.runtime=await api.runtimeInfo();toast(t('toast.runtimeInstalled'),t('toast.backendRestarted'),'success')}catch(e){state.runtimeInstallState='error';toast(t('toast.runtimeFailed'),e.message||String(e),'danger')}renderPage()})
   $('#restart-backend')?.addEventListener('click',async()=>{if(!api?.backendRestart)return;await api.backendRestart();toast(t('toast.backendRestarting'),'','success')})
