@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="$(cd -- "$(dirname -- "\${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$APP_DIR"
 
 fail() {
@@ -47,7 +47,7 @@ OUTPUT_DIR="$APP_DIR/dist"
 mkdir -p "$OUTPUT_DIR"
 STAGING_DIR="$(mktemp -d "$OUTPUT_DIR/.build-linux.XXXXXX")"
 cleanup() {
-  if [ -n "\${STAGING_DIR:-}" ] && [ -d "$STAGING_DIR" ]; then
+  if [ -n "${STAGING_DIR:-}" ] && [ -d "$STAGING_DIR" ]; then
     rm -rf -- "$STAGING_DIR"
   fi
 }
